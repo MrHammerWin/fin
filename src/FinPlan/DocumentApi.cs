@@ -7,6 +7,22 @@ public static partial class DocumentApi
 {
     public static void Map(WebApplication app, DemoStore store, FileJobs jobs, DocumentConverter converter, ConversionTools tools, string token)
     {
+        app.MapGet("/api/datasets/{id}/size", (string id) =>
+        {
+            try
+            {
+                var snapshot = store.Load(id);
+                // The initial snapshot shares its parent with generations and jobs; count only dataset files.
+                string[] metadata = ["dataset.json", "calendar.csv", "duplicates.json", "reports.json", "calendar_view.html", "volume-manifest.json"];
+                var paths = metadata.Select(name => Path.Combine(snapshot.Directory, name)).Where(File.Exists)
+                    .Concat(new[] { "documents", "bulk" }.Select(name => Path.Combine(snapshot.Directory, name))
+                        .Where(Directory.Exists).SelectMany(path => Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories)));
+                long totalBytes = 0; var files = 0;
+                foreach (var path in paths) { totalBytes += new FileInfo(path).Length; files++; }
+                return Results.Json(new { id = snapshot.Id, total_bytes = totalBytes, files });
+            }
+            catch (Exception e) when (e is IOException or JsonException) { return Results.NotFound(); }
+        });
         app.MapGet("/api/document-tools", async () =>
         {
             string[] languages;

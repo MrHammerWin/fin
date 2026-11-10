@@ -63,6 +63,9 @@ public sealed class DocumentApiTests(ConversionFixture fixture) : IClassFixture<
             using var client = new HttpClient { BaseAddress = new Uri(address) };
             var token = Regex.Match(await client.GetStringAsync("/"), "\"token\":\"([A-F0-9]+)\"").Groups[1].Value;
             client.DefaultRequestHeaders.Add("X-FinPlan-Token", token);
+            var initialBytes = BulkVolume.BytesIn(output);
+            var initialSize = JsonDocument.Parse(await client.GetStringAsync("/api/datasets/initial/size")).RootElement;
+            Assert.Equal(initialBytes, initialSize.GetProperty("total_bytes").GetInt64());
             using var bad = new MultipartFormDataContent(); bad.Add(new StringContent("not-pdf"), "file", "fake.pdf"); bad.Add(new StringContent("docx"), "target");
             Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsync("/api/conversions", bad)).StatusCode);
             using var traversal = new MultipartFormDataContent(); traversal.Add(new StringContent("initial"), "datasetId"); traversal.Add(new StringContent("../dataset.json"), "source"); traversal.Add(new StringContent("pdf"), "target");
@@ -72,11 +75,31 @@ public sealed class DocumentApiTests(ConversionFixture fixture) : IClassFixture<
             var id = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("id").GetString()!;
             var result = await Wait(client, id); Assert.Equal("succeeded", result.GetProperty("state").GetString());
             var datasetId = result.GetProperty("result").GetProperty("url").GetString()!.Split('/')[2];
+            var datasetDirectory = Path.Combine(output, "generations", datasetId);
+            var expectedBytes = BulkVolume.BytesIn(datasetDirectory);
+            var size = JsonDocument.Parse(await client.GetStringAsync($"/api/datasets/{datasetId}/size")).RootElement;
+            Assert.Equal(expectedBytes, size.GetProperty("total_bytes").GetInt64());
+            Assert.Equal(Directory.GetFiles(datasetDirectory, "*", SearchOption.AllDirectories).Length, size.GetProperty("files").GetInt32());
+            // New snapshots, private conversion jobs and current.json are outside the initial dataset.
+            initialSize = JsonDocument.Parse(await client.GetStringAsync("/api/datasets/initial/size")).RootElement;
+            Assert.Equal(initialBytes, initialSize.GetProperty("total_bytes").GetInt64());
+            // Measure the files again rather than returning the stored size from volume-manifest.json.
+            File.AppendAllText(Path.Combine(datasetDirectory, "calendar.csv"), "\r\n");
+            size = JsonDocument.Parse(await client.GetStringAsync($"/api/datasets/{datasetId}/size")).RootElement;
+            Assert.Equal(expectedBytes + 2, size.GetProperty("total_bytes").GetInt64());
+            Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/api/datasets/unknown/size")).StatusCode);
             var volume = JsonDocument.Parse(await client.GetStringAsync($"/api/datasets/{datasetId}/volume?offset=100&limit=2")).RootElement;
             Assert.Equal(2, volume.GetProperty("files").GetArrayLength()); Assert.True(volume.GetProperty("total").GetInt32() > 100);
             var path = volume.GetProperty("files")[0].GetProperty("path").GetString();
             Assert.Equal(HttpStatusCode.OK, (await client.GetAsync($"/datasets/{datasetId}/{path}")).StatusCode);
             Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/datasets/{datasetId}/bulk/unknown.csv")).StatusCode);
+            // An archived HTML must not hide new controls or be rewritten merely by viewing it online.
+            var archivedPath = Path.Combine(output, "calendar_view.html");
+            File.WriteAllText(archivedPath, "<html>Saved older interface</html>");
+            var archivedHtml = await client.GetStringAsync("/datasets/initial/calendar_view.html");
+            Assert.Contains("id=\"dataset-size\"", archivedHtml);
+            Assert.Contains("window.finplanRuntime", archivedHtml);
+            Assert.Equal("<html>Saved older interface</html>", File.ReadAllText(archivedPath));
         }
         finally { await app.StopAsync(); }
     }

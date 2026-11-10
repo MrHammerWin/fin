@@ -74,3 +74,31 @@ test('Loading the corpus asynchronously does not reveal its section on another p
   assert.match(a.nodes.get('volume-summary').textContent, /Корпус для импорта/);
   assert.equal(a.nodes.get('volume-corpus').hidden, true);
 });
+
+test('Dataset size comes from the opened dataset files and can be refreshed independently of the target', async () => {
+  let current = 50_002_841_615, failed = false, requests = 0;
+  const a = app({token: 'test-token'}, async url => {
+    if (url === '/api/document-tools') return {json: async () => ({libreOffice: true, ocr: true, languages: ['rus', 'eng']})};
+    assert.equal(url, '/api/datasets/initial/size'); requests++;
+    return {ok: !failed, json: async () => ({total_bytes: current, files: 13282})};
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(a.nodes.get('dataset-size').textContent, '50,003 ГБ');
+  assert.match(a.nodes.get('dataset-size-details').textContent, /13\s282 файлов/);
+  a.nodes.get('volume-target').value = '200';
+  assert.equal(a.nodes.get('dataset-size').textContent, '50,003 ГБ');
+  current = 10_123_456;
+  await a.nodes.get('dataset-size-refresh').onclick();
+  assert.equal(a.nodes.get('dataset-size').textContent, '10,123 МБ'); assert.equal(requests, 2);
+  failed = true;
+  await a.nodes.get('dataset-size-refresh').onclick();
+  assert.equal(a.nodes.get('dataset-size').textContent, 'Недоступен');
+  assert.equal(a.nodes.get('dataset-size-refresh').disabled, false);
+});
+
+test('Offline size is explicitly marked as saved metadata', () => {
+  const a = app(null, undefined, {volume: {total_bytes: 50_002_841_615}});
+  assert.equal(a.nodes.get('dataset-size').textContent, '50,003 ГБ');
+  assert.match(a.nodes.get('dataset-size-details').textContent, /сохранён при генерации/);
+  assert.equal(a.nodes.get('dataset-size-refresh').disabled, true);
+});

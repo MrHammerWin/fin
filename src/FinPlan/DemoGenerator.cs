@@ -157,9 +157,11 @@ public sealed class DemoGenerator(string root)
         return data;
     }
     public void RenderViewer(string output, Dataset data)
+        => File.WriteAllText(Path.Combine(output, "calendar_view.html"), RenderHtml(data));
+    public string RenderHtml(Dataset data)
     {
         var template = File.ReadAllText(Path.Combine(root, "demo", "viewer.html"));
         var json = JsonSerializer.Serialize(data, JsonFiles.Options).Replace("<", "\\u003c");
-        File.WriteAllText(Path.Combine(output, "calendar_view.html"), template.Replace("__DATA__", json).Replace("__FINANCE__", File.ReadAllText(Path.Combine(root, "demo", "finance.js"))).Replace("__DOCUMENT_TOOLS__", File.ReadAllText(Path.Combine(root, "demo", "document-tools.js"))));
+        return template.Replace("__DATA__", json).Replace("__FINANCE__", File.ReadAllText(Path.Combine(root, "demo", "finance.js"))).Replace("__DOCUMENT_TOOLS__", File.ReadAllText(Path.Combine(root, "demo", "document-tools.js")));
     }
 }

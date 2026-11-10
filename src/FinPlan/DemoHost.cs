@@ -67,7 +67,7 @@ public static partial class DemoHost
             if (file == "calendar_view.html")
             {
                 var config = JsonSerializer.Serialize(new { regenerateUrl = "/api/regenerate", token });
-                var html = File.ReadAllText(path).Replace("<script id=\"dataset\"", $"<script>window.finplanRuntime={config};</script>\n<script id=\"dataset\"");
+                var html = new DemoGenerator(root).RenderHtml(snapshot.Data).Replace("<script id=\"dataset\"", $"<script>window.finplanRuntime={config};</script>\n<script id=\"dataset\"");
                 return Results.Content(html, "text/html; charset=utf-8");
             }
             var mime = DocumentApi.Mime(file);

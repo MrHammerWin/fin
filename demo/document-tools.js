@@ -51,6 +51,29 @@
     if (saved && /^(MB|GB)$/.test(saved.unit)) { byId('volume-target').value = saved.value; byId('volume-unit').value = saved.unit; }
   } catch {}
   byId('volume-target').onchange = saveTarget; byId('volume-unit').onchange = saveTarget;
+  async function loadDatasetSize() {
+    const value = byId('dataset-size'), details = byId('dataset-size-details'), button = byId('dataset-size-refresh');
+    if (!runtime) {
+      button.disabled = true;
+      value.textContent = BASE.volume?.total_bytes ? bytes(BASE.volume.total_bytes) : 'Недоступен';
+      details.textContent = BASE.volume?.total_bytes
+        ? 'Размер сохранён при генерации. Для измерения файлов на диске запустите веб-приложение.'
+        : 'Для измерения размера файлов запустите веб-приложение.';
+      return;
+    }
+    button.disabled = true;
+    try {
+      const response = await fetch(`/api/datasets/${datasetId}/size`, {cache: 'no-store'});
+      if (!response.ok) throw Error('Не удалось измерить размер открытого набора. Повторите попытку.');
+      const data = await response.json();
+      if (!Number.isSafeInteger(data.total_bytes) || !Number.isSafeInteger(data.files)) throw Error('Не удалось получить размер файлов. Повторите попытку.');
+      value.textContent = bytes(data.total_bytes);
+      details.textContent = `${Number(data.files).toLocaleString('ru-RU')} файлов на диске: документы, таблицы и файлы календаря открытого набора.`;
+    } catch (error) { value.textContent = 'Недоступен'; details.textContent = error.message; }
+    finally { button.disabled = false; }
+  }
+  byId('dataset-size-refresh').onclick = loadDatasetSize;
+  loadDatasetSize();
   function offline(status) { byId(status).textContent = 'Для обработки файлов запустите приложение через ▶ в Rider или как локальное веб-приложение .NET.'; }
   function jobUi(job) {
     const generation = job.kind === 'generation';
