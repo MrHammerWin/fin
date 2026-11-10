@@ -5,6 +5,7 @@ using System.Text;
 namespace FinPlan;
 
 public sealed record VolumeFile(string Path, string Kind, long Bytes, long Rows, string Sha256);
+public sealed record VolumeChange(string Operation, long RequestedBytes, long BeforeBytes);
 public sealed class VolumeSummary
 {
     public long TargetBytes { get; set; }
@@ -13,11 +14,13 @@ public sealed class VolumeSummary
     public long Obligations { get; set; }
     public int Files { get; set; }
     public string Manifest { get; set; } = "volume-manifest.json";
+    public VolumeChange? LastChange { get; set; }
 }
 public sealed class VolumeManifest
 {
     public int Version { get; set; } = 1;
     public int Seed { get; set; }
+    public long NextObligationId { get; set; }
     public string Scope { get; set; } = "Связанный синтетический корпус для импорта и нагрузки. Календарь содержит отдельный контрольный набор из 100 документов; строки корпуса автоматически в него не импортируются.";
     public VolumeSummary Summary { get; set; } = new();
     public List<VolumeFile> Files { get; set; } = [];
@@ -50,7 +53,18 @@ public static class BulkVolume
             for (var i = 0; i < 1000; i++) counterparties.Row([$"BCP-{i:0000}", $"ООО Учебный поставщик {i:0000}", $"SYNTHETIC-{i:0000}", "ООО Демо Финансы (вымышленная)"]);
             var file = counterparties.Complete("bulk/counterparties.csv", "counterparties"); manifest.Files.Add(file); total += file.Bytes;
         }
-        long id = 1; var batch = 0; var bytesPerRecord = 1500L;
+        return Append(output, manifest, targetBytes, progress, cancellation);
+    }
+
+    public static VolumeManifest Append(string output, VolumeManifest manifest, long targetBytes, Action<GenerationProgress>? progress = null, CancellationToken cancellation = default)
+    {
+        var total = BytesIn(output); var bulk = Path.Combine(output, "bulk");
+        manifest.Summary.TargetBytes = targetBytes;
+        // Start a new contract group; this also works after a suffix was removed.
+        var next = Math.Max(1, manifest.NextObligationId == 0 ? manifest.Summary.Obligations + 1 : manifest.NextObligationId);
+        var id = ((next - 1 + 24) / 25) * 25 + 1;
+        var batch = manifest.Files.Where(f => f.Kind == "obligations").Select(f => int.Parse(f.Path.Split('-')[1], CultureInfo.InvariantCulture)).DefaultIfEmpty(0).Max();
+        var seed = manifest.Seed; var bytesPerRecord = 1500L;
         string[] currencies = ["RUB", "CHF", "GBP"];
         while (total < targetBytes)
         {
@@ -94,12 +108,48 @@ public static class BulkVolume
             var batchFiles = new[] { contracts.Complete($"bulk/{prefix}-contracts.csv", "contracts"), invoices.Complete($"bulk/{prefix}-invoices.csv", "invoices"), acts.Complete($"bulk/{prefix}-acts.csv", "acts"), obligations.Complete($"bulk/{prefix}-obligations.csv", "obligations"), bank.Complete($"bulk/{prefix}-bank.csv", "bank") };
             var written = batchFiles.Sum(f => f.Bytes); total += written; bytesPerRecord = written / (id - firstId);
             manifest.Files.AddRange(batchFiles);
-            manifest.Summary.Obligations = id - 1;
-            progress?.Invoke(new(total, targetBytes, id - 1, $"Созданы связанные реестры, часть {batch}"));
+            manifest.Summary.Obligations += id - firstId;
+            manifest.NextObligationId = id;
+            progress?.Invoke(new(total, targetBytes, manifest.Summary.Obligations, $"Созданы связанные реестры, часть {batch}"));
         }
         manifest.Summary.DocumentBytes = manifest.Files.Sum(f => f.Bytes);
         manifest.Summary.Files = manifest.Files.Count;
         return manifest;
+    }
+
+    public static long RemovableBytes(VolumeManifest manifest) => manifest.Files.Where(f => f.Path.StartsWith("bulk/part-", StringComparison.Ordinal)).Sum(f => f.Bytes);
+
+    public static void RemoveSuffix(string output, VolumeManifest manifest, long bytes, Action<GenerationProgress>? progress = null, CancellationToken cancellation = default)
+    {
+        if (bytes <= 0 || bytes > RemovableBytes(manifest)) throw new ArgumentException("Нельзя удалить такой объём: контрольные документы и справочник контрагентов сохраняются.");
+        manifest.NextObligationId = Math.Max(manifest.NextObligationId, manifest.Summary.Obligations + 1);
+        var groups = manifest.Files.Where(f => f.Path.StartsWith("bulk/part-", StringComparison.Ordinal))
+            .GroupBy(f => f.Path[..f.Path.LastIndexOf('-')]).OrderByDescending(g => int.Parse(g.Key.Split('-')[1], CultureInfo.InvariantCulture)).ToList();
+        long removed = 0; var deleted = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var group in groups)
+        {
+            cancellation.ThrowIfCancellationRequested();
+            var partBytes = group.Sum(f => f.Bytes);
+            if (removed > 0 && Math.Abs(removed - bytes) <= Math.Abs(removed + partBytes - bytes)) break;
+            if (partBytes > ToleranceBytes / 2) throw new InvalidDataException("Часть корпуса слишком велика для безопасного удаления с допуском 100 МБ.");
+            var obligations = group.Single(f => f.Kind == "obligations");
+            // A part has at most 20,000 obligations. Only the removed parts are read.
+            foreach (var row in ConversionContentReader.ReadCsv(Path.Combine(output, obligations.Path)).Skip(1))
+            {
+                cancellation.ThrowIfCancellationRequested();
+                var currency = row[8];
+                manifest.InvoiceTotals[currency] -= decimal.Parse(row[11], CultureInfo.InvariantCulture);
+                manifest.PaymentTotals[currency] -= decimal.Parse(row[12], CultureInfo.InvariantCulture);
+            }
+            foreach (var file in group) { File.Delete(Path.Combine(output, file.Path)); deleted.Add(file.Path); }
+            manifest.Summary.Obligations -= obligations.Rows;
+            removed += partBytes;
+            progress?.Invoke(new(removed, bytes, manifest.Summary.Obligations, "Удалены последние связанные части корпуса"));
+            if (removed >= bytes) break;
+        }
+        manifest.Files.RemoveAll(file => deleted.Contains(file.Path));
+        manifest.Summary.DocumentBytes = manifest.Files.Sum(f => f.Bytes);
+        manifest.Summary.Files = manifest.Files.Count;
     }
 
     public static void Finalize(string output, Dataset data, VolumeManifest manifest, DemoGenerator generator)
@@ -113,8 +163,9 @@ public static class BulkVolume
             var total = BytesIn(output);
             if (total == manifest.Summary.TotalBytes)
             {
-                if (total < manifest.Summary.TargetBytes || total - manifest.Summary.TargetBytes > ToleranceBytes)
-                    throw new InvalidDataException("Фактический объём вышел за диапазон [цель; цель + 100 МБ].");
+                var difference = total - manifest.Summary.TargetBytes;
+                if (difference > ToleranceBytes || difference < (manifest.Summary.LastChange?.Operation == "remove" ? -ToleranceBytes : 0))
+                    throw new InvalidDataException("Фактический объём вышел за допустимый диапазон относительно цели.");
                 return;
             }
             manifest.Summary.TotalBytes = total;

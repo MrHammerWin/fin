@@ -82,6 +82,60 @@ public sealed class DemoStore
         finally { gate.Release(); }
     }
 
+    public async Task<DemoSnapshot> ResizeAsync(string expectedId, string operation, long bytes, Action<GenerationProgress>? progress = null, CancellationToken cancellation = default)
+    {
+        if (!await gate.WaitAsync(0)) throw new GenerationBusyException();
+        var directory = Path.Combine(output, "generations", Guid.NewGuid().ToString("N"));
+        var pointerTemp = Path.Combine(output, ".current-" + Guid.NewGuid().ToString("N") + ".tmp");
+        var published = false;
+        try
+        {
+            if (!string.Equals(expectedId, Current.Id, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Набор уже изменился. Откройте текущий набор и повторите корректировку.");
+            if (operation is not ("add" or "remove") || bytes < 1_000_000) throw new ArgumentException("Выберите добавление или удаление и объём от 1 МБ.");
+            var previous = Load(expectedId); var before = DatasetFiles.BytesIn(previous.Directory);
+            var manifest = DocumentApi.ReadVolume(previous);
+            if (operation == "remove" && (manifest is null || bytes > BulkVolume.RemovableBytes(manifest)))
+                throw new ArgumentException("Нельзя удалить такой объём: контрольные документы и справочник контрагентов сохраняются.");
+            var reserve = operation == "add" ? checked(bytes + 5_000_000_000) : 20_000_000;
+            if (new DriveInfo(Path.GetPathRoot(output)!).AvailableFreeSpace < reserve)
+                throw new InvalidOperationException("Недостаточно свободного места для корректировки набора.");
+            await Task.Run(() => DatasetFiles.CopySnapshot(previous.Directory, directory, reserve, cancellation), cancellation);
+            var data = ReadSnapshot(Path.GetFileName(directory)).Data;
+            var target = operation == "add" ? checked(before + bytes) : before - bytes;
+            await Task.Run(() =>
+            {
+                if (operation == "add")
+                {
+                    var oldCount = manifest?.Summary.Obligations ?? 0;
+                    void Report(GenerationProgress p) => progress?.Invoke(new(Math.Max(0, p.Bytes - before), bytes, p.Obligations - oldCount, "Догенерация: " + p.Message));
+                    manifest = manifest is null ? BulkVolume.Generate(directory, data.Seed, target, Report, cancellation)
+                        : BulkVolume.Append(directory, manifest, target, Report, cancellation);
+                }
+                else BulkVolume.RemoveSuffix(directory, manifest!, bytes, progress, cancellation);
+                manifest!.Summary.TargetBytes = target;
+                manifest.Summary.LastChange = new(operation, bytes, before);
+                BulkVolume.Finalize(directory, data, manifest, generator);
+                var actual = data.Volume!.TotalBytes;
+                if (operation == "add" ? actual < before + bytes : actual >= before || Math.Abs(before - actual - bytes) > BulkVolume.ToleranceBytes)
+                    throw new InvalidDataException("Не удалось скорректировать объём в пределах допуска. Текущий набор сохранён.");
+            }, cancellation);
+            cancellation.ThrowIfCancellationRequested();
+            var next = new DemoSnapshot(Path.GetFileName(directory), directory, data);
+            JsonFiles.Write(pointerTemp, new CurrentReference(next.Id));
+            File.Move(pointerTemp, Path.Combine(output, "current.json"), true);
+            Volatile.Write(ref current, next); published = true;
+            CleanupWarning = RemovePreviousDatasets();
+            return next;
+        }
+        catch
+        {
+            if (!published && System.IO.Directory.Exists(directory)) System.IO.Directory.Delete(directory, true);
+            if (File.Exists(pointerTemp)) File.Delete(pointerTemp);
+            throw;
+        }
+        finally { gate.Release(); }
+    }
+
     public static string ResolveCurrentDirectory(string output)
     {
         output = Path.GetFullPath(output);

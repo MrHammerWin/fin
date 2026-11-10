@@ -101,6 +101,46 @@ public sealed class DocumentApiTests(ConversionFixture fixture) : IClassFixture<
         finally { await app.StopAsync(); }
     }
 
+    [Fact]
+    public async Task ResizeJobsAuthorizeValidateDatasetAndReportActualBeforeAndAfterSizes()
+    {
+        var output = fixture.NewDirectory(); await using var app = DemoHost.Create(fixture.Root, output); await app.StartAsync();
+        try
+        {
+            var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
+            using var client = new HttpClient { BaseAddress = new Uri(address) };
+            using var unauthorized = await client.PostAsync("/api/jobs/resize", null);
+            Assert.Equal(HttpStatusCode.Forbidden, unauthorized.StatusCode);
+            var token = Regex.Match(await client.GetStringAsync("/"), "\"token\":\"([A-F0-9]+)\"").Groups[1].Value;
+            client.DefaultRequestHeaders.Add("X-FinPlan-Token", token);
+            async Task<HttpResponseMessage> Submit(string dataset, string operation, long bytes) => await client.PostAsync("/api/jobs/resize",
+                new StringContent(JsonSerializer.Serialize(new { datasetId = dataset, operation, bytes }), Encoding.UTF8, "application/json"));
+            Assert.Equal(HttpStatusCode.BadRequest, (await Submit("initial", "remove", 1_000_000)).StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest, (await Submit("initial", "add", 0)).StatusCode);
+            var currentId = "initial";
+            foreach (var operation in new[] { "add", "remove" })
+            {
+                var before = JsonDocument.Parse(await client.GetStringAsync($"/api/datasets/{currentId}/size")).RootElement.GetProperty("total_bytes").GetInt64();
+                var bytes = operation == "add" ? 20_000_000L : 10_000_000L;
+                using var response = await Submit(currentId, operation, bytes); Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+                var id = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("id").GetString()!;
+                var completed = await Wait(client, id); Assert.Equal("succeeded", completed.GetProperty("state").GetString());
+                var nextId = completed.GetProperty("result").GetProperty("url").GetString()!.Split('/')[2];
+                var size = JsonDocument.Parse(await client.GetStringAsync($"/api/datasets/{nextId}/size")).RootElement;
+                var after = size.GetProperty("total_bytes").GetInt64();
+                Assert.Equal(operation, size.GetProperty("last_change").GetProperty("operation").GetString());
+                Assert.Equal(bytes, size.GetProperty("last_change").GetProperty("requested_bytes").GetInt64());
+                Assert.Equal(before, size.GetProperty("last_change").GetProperty("before_bytes").GetInt64());
+                if (operation == "add") Assert.InRange(after - before, bytes, bytes + BulkVolume.ToleranceBytes);
+                else { Assert.True(before > after); Assert.InRange(Math.Abs(before - after - bytes), 0, BulkVolume.ToleranceBytes); }
+                Assert.Equal(HttpStatusCode.Conflict, (await Submit(currentId, "add", 1_000_000)).StatusCode);
+                Assert.Single(Directory.GetDirectories(Path.Combine(output, "generations")));
+                currentId = nextId;
+            }
+        }
+        finally { await app.StopAsync(); }
+    }
+
     private static async Task<JsonElement> Wait(HttpClient client, string id)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));

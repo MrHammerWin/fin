@@ -116,6 +116,7 @@ public sealed class DemoStoreTests(DemoFixture fixture) : IClassFixture<DemoFixt
             var first = store.RegenerateAsync(123);
             await entered.Task;
             await Assert.ThrowsAsync<GenerationBusyException>(() => store.RegenerateAsync(456));
+            await Assert.ThrowsAsync<GenerationBusyException>(() => store.ResizeAsync("initial", "add", 1_000_000));
             release.SetResult();
             Assert.Equal(123, (await first).Data.Seed);
         }

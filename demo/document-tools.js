@@ -20,14 +20,14 @@
     try { localStorage.setItem(savedKey, JSON.stringify(remembered)); } catch {}
   }
   function saveTarget() {
-    try { localStorage.setItem('finplan-volume-target', JSON.stringify({value: byId('volume-target').value, unit: byId('volume-unit').value})); } catch {}
+    try { localStorage.setItem('finplan-volume-target', JSON.stringify({value: byId('volume-target').value, unit: byId('volume-unit').value, operation: byId('volume-operation').value})); } catch {}
   }
-  function targetBytes(value, unit) {
+  function targetBytes(value, unit, minimum = 20000000n) {
     if (!/^\d+(?:[.,]\d{1,3})?$/.test(String(value))) throw Error('Укажите положительное число, до трёх знаков после запятой.');
     const [whole, fraction = ''] = String(value).replace(',', '.').split('.');
     const factor = unit === 'MB' ? 1000000n : 1000000000n;
     const result = BigInt(whole) * factor + BigInt(fraction.padEnd(3, '0')) * factor / 1000n;
-    if (result < 20000000n || result > BigInt(Number.MAX_SAFE_INTEGER)) throw Error('Минимальный целевой объём 20 МБ. Укажите объём в пределах свободного места.');
+    if (result < minimum || result > BigInt(Number.MAX_SAFE_INTEGER)) throw Error(`Минимальный объём ${minimum / 1000000n} МБ. Укажите объём в пределах свободного места.`);
     return Number(result);
   }
   // Exposed only to make unit conversion independently testable without running the server.
@@ -52,9 +52,27 @@
   setSourceKind();
   try {
     const saved = JSON.parse(localStorage.getItem('finplan-volume-target') || 'null');
-    if (saved && /^(MB|GB)$/.test(saved.unit)) { byId('volume-target').value = saved.value; byId('volume-unit').value = saved.unit; }
+    if (saved && /^(MB|GB)$/.test(saved.unit)) {
+      byId('volume-target').value = saved.value; byId('volume-unit').value = saved.unit;
+      if (['replace', 'add', 'remove'].includes(saved.operation)) byId('volume-operation').value = saved.operation;
+    }
   } catch {}
   byId('volume-target').onchange = saveTarget; byId('volume-unit').onchange = saveTarget;
+  function updateOperation() {
+    const action = byId('volume-operation').value || 'replace';
+    byId('volume-label').textContent = action === 'replace' ? 'Целевой объём' : action === 'add' ? 'Добавить объём' : 'Удалить объём';
+    byId('volume-submit').textContent = action === 'replace' ? 'Сгенерировать и заменить' : action === 'add' ? 'Догенерировать данные' : 'Уменьшить датасет';
+    byId('volume-action-help').textContent = action === 'replace' ? 'Создать другой набор заданного суммарного размера. Нужно свободное место на весь новый объём и ещё 5 ГБ.'
+      : action === 'add' ? 'Добавить указанный объём к текущему набору. Существующие записи сохраняются, новые получают уникальные номера. Нужно свободное место на добавляемый объём и ещё 5 ГБ.'
+      : 'Удалить примерно указанный объём из конца корпуса целыми связанными частями. Отклонение до 100 МБ. Контрольные документы, справочник контрагентов и календарь сохраняются.';
+    saveTarget();
+  }
+  byId('volume-operation').onchange = updateOperation; updateOperation();
+  function showChange(total, change) {
+    const node = byId('dataset-change');
+    node.textContent = change ? `${change.operation === 'add' ? 'Добавлено' : 'Удалено'} ${bytes(Math.abs(total - change.before_bytes))} при запросе ${bytes(change.requested_bytes)}. Было ${bytes(change.before_bytes)}, стало ${bytes(total)}.` : '';
+  }
+  showChange(BASE.volume?.total_bytes, BASE.volume?.last_change);
   async function loadDatasetSize() {
     const value = byId('dataset-size'), details = byId('dataset-size-details'), button = byId('dataset-size-refresh');
     if (!runtime) {
@@ -73,7 +91,9 @@
       if (!Number.isSafeInteger(data.total_bytes) || !Number.isSafeInteger(data.files)) throw Error('Не удалось получить размер файлов. Повторите попытку.');
       value.textContent = bytes(data.total_bytes);
       details.textContent = `${Number(data.files).toLocaleString('ru-RU')} файлов на диске: документы, таблицы и файлы календаря открытого набора.`;
+      if (Number.isSafeInteger(data.removable_bytes)) details.textContent += ` Из корпуса можно удалить до ${bytes(Math.floor(data.removable_bytes / 1000000) * 1000000)}.`;
       if (data.cleanup_warning) details.textContent += ' ' + data.cleanup_warning;
+      showChange(data.total_bytes, data.last_change);
     } catch (error) { value.textContent = 'Недоступен'; details.textContent = error.message; }
     finally { button.disabled = false; }
   }
@@ -86,6 +106,7 @@
     const active = job.state === 'running' || job.state === 'queued';
     if (generation && active) generationToOpen = job.id;
     byId(generation ? 'volume-submit' : 'conversion-submit').disabled = active;
+    if (generation) byId('volume-operation').disabled = active;
     const cancel = byId(generation ? 'volume-cancel' : 'conversion-cancel'); cancel.hidden = !active;
     cancel.onclick = async () => {
       const response = await fetch('/api/jobs/' + job.id, {method: 'DELETE', headers: headers()});
@@ -147,8 +168,10 @@
     event.preventDefault(); if (!runtime) { offline('volume-status'); return; }
     const button = byId('volume-submit'); button.disabled = true; byId('volume-result').innerHTML = '';
     try {
-      const target = targetBytes(byId('volume-target').value, byId('volume-unit').value); saveTarget();
-      const response = await fetch('/api/jobs/generate', {method: 'POST', headers: {...headers(), 'Content-Type': 'application/json'}, body: JSON.stringify({targetBytes: target})});
+      const operation = byId('volume-operation').value || 'replace';
+      const target = targetBytes(byId('volume-target').value, byId('volume-unit').value, operation === 'replace' ? 20000000n : 1000000n); saveTarget();
+      const response = await fetch(operation === 'replace' ? '/api/jobs/generate' : '/api/jobs/resize', {method: 'POST', headers: {...headers(), 'Content-Type': 'application/json'},
+        body: JSON.stringify(operation === 'replace' ? {targetBytes: target} : {datasetId, operation, bytes: target})});
       const job = await response.json(); if (!response.ok) throw Error(job.error || 'Не удалось начать генерацию.');
       remember(job.id, 'generation'); jobUi(job); poll(job.id, 'generation');
     } catch (error) { byId('volume-status').textContent = error.message; button.disabled = false; }

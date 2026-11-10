@@ -12,12 +12,11 @@ public static partial class DocumentApi
             try
             {
                 var snapshot = store.Load(id);
-                var paths = DemoStore.MetadataFiles.Select(name => Path.Combine(snapshot.Directory, name)).Where(File.Exists)
-                    .Concat(new[] { "documents", "bulk" }.Select(name => Path.Combine(snapshot.Directory, name))
-                        .Where(Directory.Exists).SelectMany(path => Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories)));
+                var paths = DatasetFiles.Paths(snapshot.Directory);
                 long totalBytes = 0; var files = 0;
                 foreach (var path in paths) { totalBytes += new FileInfo(path).Length; files++; }
-                return Results.Json(new { id = snapshot.Id, total_bytes = totalBytes, files, cleanup_warning = store.CleanupWarning });
+                var manifest = ReadVolume(snapshot);
+                return Results.Json(new { id = snapshot.Id, total_bytes = totalBytes, files, removable_bytes = manifest is null ? 0 : BulkVolume.RemovableBytes(manifest), last_change = manifest?.Summary.LastChange, cleanup_warning = store.CleanupWarning }, JsonFiles.Options);
             }
             catch (Exception e) when (e is IOException or JsonException) { return Results.NotFound(); }
         });
@@ -48,6 +47,33 @@ public static partial class DocumentApi
             catch (GenerationBusyException e) { return Results.Json(new { error = e.Message }, statusCode: 409); }
             catch (Exception e) when (e is JsonException or KeyNotFoundException or InvalidOperationException or FormatException)
             { return Results.BadRequest(new { error = "Укажите целевой объём целым числом байт." }); }
+        });
+        app.MapPost("/api/jobs/resize", async (HttpContext context) =>
+        {
+            if (!Authorized(context, token)) return Results.StatusCode(403);
+            try
+            {
+                using var json = await JsonDocument.ParseAsync(context.Request.Body, cancellationToken: context.RequestAborted);
+                var datasetId = json.RootElement.GetProperty("datasetId").GetString();
+                var operation = json.RootElement.GetProperty("operation").GetString();
+                var bytes = json.RootElement.GetProperty("bytes").GetInt64();
+                if (bytes < 1_000_000 || bytes > 9_007_199_254_740_991 || operation is not ("add" or "remove"))
+                    return Results.BadRequest(new { error = "Выберите добавление или удаление и объём от 1 МБ." });
+                if (datasetId != store.Current.Id) return Results.Json(new { error = "Набор уже изменился. Откройте текущий набор." }, statusCode: 409);
+                var manifest = ReadVolume(store.Current);
+                if (operation == "remove" && (manifest is null || bytes > BulkVolume.RemovableBytes(manifest)))
+                    return Results.BadRequest(new { error = "Нельзя удалить такой объём: контрольные документы и справочник контрагентов сохраняются." });
+                var id = Guid.NewGuid().ToString("N");
+                var view = jobs.Enqueue(id, "generation", async (progress, cancellation) =>
+                {
+                    var snapshot = await store.ResizeAsync(datasetId!, operation!, bytes, progress, cancellation);
+                    return new(Url: $"/datasets/{snapshot.Id}/calendar_view.html#/generation", Warnings: store.CleanupWarning is { } warning ? [warning] : [], Bytes: snapshot.Data.Volume!.TotalBytes);
+                }, bytes);
+                return Results.Json(view, JsonFiles.Options, statusCode: 202);
+            }
+            catch (GenerationBusyException e) { return Results.Json(new { error = e.Message }, statusCode: 409); }
+            catch (Exception e) when (e is JsonException or KeyNotFoundException or InvalidOperationException or FormatException)
+            { return Results.BadRequest(new { error = "Укажите действие, текущий набор и объём целым числом байт." }); }
         });
         app.MapPost("/api/conversions", async (HttpContext context) =>
         {

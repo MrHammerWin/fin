@@ -129,3 +129,34 @@ test('Restoring an old successful generation never redirects to a retired datase
   assert.equal(a.target(), null);
   assert.equal(a.nodes.get('volume-result').innerHTML, '');
 });
+
+for (const operation of ['add', 'remove']) test(`Dataset ${operation} submits a byte delta and the current dataset, not a replacement target`, async () => {
+  let submitted;
+  const a = app({token: 'test-token'}, async (url, options) => {
+    if (url === '/api/document-tools') return {json: async () => ({libreOffice: true, ocr: true, languages: ['eng']})};
+    if (url.endsWith('/size')) return {ok: true, json: async () => ({total_bytes: 50e9, files: 1000})};
+    if (url === '/api/jobs/resize') {
+      submitted = JSON.parse(options.body);
+      assert.equal(options.headers['X-FinPlan-Token'], 'test-token');
+    }
+    return {ok: true, json: async () => ({id: 'd'.repeat(32), kind: 'generation', state: 'queued', target_bytes: 1_500_000, bytes: 0})};
+  });
+  a.nodes.get('volume-operation').value = operation; a.nodes.get('volume-operation').onchange();
+  a.nodes.get('volume-target').value = '1,5'; a.nodes.get('volume-unit').value = 'MB';
+  await a.nodes.get('volume-form').onsubmit({preventDefault() {}});
+  assert.deepEqual(submitted, {datasetId: 'initial', operation, bytes: 1_500_000});
+  assert.equal(a.nodes.get('volume-operation').disabled, true);
+  assert.equal(a.nodes.get('volume-submit').textContent, operation === 'add' ? 'Догенерировать данные' : 'Уменьшить датасет');
+  assert.match(a.nodes.get('volume-action-help').textContent, operation === 'add' ? /Существующие записи сохраняются/ : /Контрольные документы/);
+});
+
+test('The size card shows the actual removal separately from the requested amount', async () => {
+  const a = app({token: 'test-token'}, async url => url === '/api/document-tools'
+    ? {json: async () => ({libreOffice: true, ocr: true, languages: ['eng']})}
+    : {ok: true, json: async () => ({total_bytes: 49.9e9, files: 1000, removable_bytes: 49e9,
+      last_change: {operation: 'remove', before_bytes: 50e9, requested_bytes: 90e6}})});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(a.nodes.get('dataset-change').textContent, /Удалено 100 МБ при запросе 90 МБ/);
+  assert.match(a.nodes.get('dataset-change').textContent, /Было 50 ГБ, стало 49,9 ГБ/);
+  assert.match(a.nodes.get('dataset-size-details').textContent, /до 49 ГБ/);
+});
