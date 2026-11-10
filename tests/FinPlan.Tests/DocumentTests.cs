@@ -22,6 +22,18 @@ public sealed class DemoFixture : IDisposable
 public sealed class DocumentTests(DemoFixture fixture) : IClassFixture<DemoFixture>
 {
     [Fact]
+    public void PdfWriterReleasesFileBeforeImmediateExclusiveReadAndDelete()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "finplan-pdf-lock-" + Guid.NewGuid().ToString("N") + ".pdf");
+        try
+        {
+            DocumentFiles.Pdf(path, ["PDF ownership regression", "Сумма 1234.56"]);
+            using (var file = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None)) Assert.True(file.Length > 0);
+            File.Delete(path); Assert.False(File.Exists(path));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+    [Fact]
     public void HundredFilesTwentyCounterpartiesAndAllLinksExist()
     {
         var d = fixture.Data;

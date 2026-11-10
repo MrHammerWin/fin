@@ -121,7 +121,7 @@ public sealed class ConversionTests(ConversionFixture fixture) : IClassFixture<C
             surface.Canvas.Clear(SKColors.White);
             surface.Canvas.DrawText("СКАН СЧЁТА", 80, 120, paint); surface.Canvas.DrawText("Сумма 1234.56", 80, 220, paint);
             surface.Canvas.DrawText("SCANPROBE72", 80, 320, paint);
-            using var image = surface.Snapshot(); using var pdf = SKDocument.CreatePdf(path);
+            using var image = surface.Snapshot(); using var output = File.Create(path); using var pdf = SKDocument.CreatePdf(output);
             var page = pdf.BeginPage(600, 400); paint.TextSize = 20; page.DrawText("TEXTLAYERPROBE72", 40, 100, paint); pdf.EndPage();
             page = pdf.BeginPage(600, 400); page.DrawImage(image, new SKRect(0, 30, 600, 244)); pdf.EndPage(); pdf.Close();
         }

@@ -76,7 +76,9 @@ public static class DocumentFiles
     {
         using var font = SKTypeface.FromFile(Path.Combine(AppContext.BaseDirectory, "Assets", "DejaVuSans.ttf")) ?? throw new InvalidOperationException("Не найден шрифт DejaVuSans.");
         using var paint = new SKPaint { Typeface = font, TextSize = 10, IsAntialias = true, Color = SKColors.Black };
-        using var document = SKDocument.CreatePdf(path);
+        // Own the file stream explicitly: a native PDF stream can keep the file locked on Windows.
+        using var output = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
+        using var document = SKDocument.CreatePdf(output);
         var canvas = document.BeginPage(595, 842); var y = 55f;
         foreach (var line in lines)
         {
