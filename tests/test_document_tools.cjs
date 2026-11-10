@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
 
-function app(runtime = null, fetch = async () => { throw Error('Unexpected fetch'); }, extraBase = {}) {
+function app(runtime = null, fetch = async () => { throw Error('Unexpected fetch'); }, extraBase = {}, savedJobs = []) {
   const nodes = new Map();
   function node(id) {
     if (!nodes.has(id)) nodes.set(id, {id, value: '', files: [], innerHTML: '', textContent: '', hidden: false, disabled: false});
@@ -14,14 +14,15 @@ function app(runtime = null, fetch = async () => { throw Error('Unexpected fetch
   node('conversion-ocr').value = 'auto'; node('conversion-languages').value = 'rus+eng';
   node('volume-target').value = '50'; node('volume-unit').value = 'GB';
   node('volume-corpus').hidden = true;
-  const store = new Map(), timers = [];
+  const store = new Map(), timers = []; let target = null;
+  store.set('finplan-document-jobs', JSON.stringify(savedJobs));
   const context = vm.createContext({document: {getElementById: node, querySelectorAll: () => []}, window: {finplanRuntime: runtime},
     BASE: {documents: [{path: 'documents/user.docx'}], ...extraBase}, esc: s => String(s).replace(/</g, '&lt;'),
     localStorage: {getItem: key => store.get(key) ?? null, setItem: (key, value) => store.set(key, value)},
-    location: {pathname: '/datasets/initial/calendar_view.html'}, fetch, console,
+    location: {pathname: '/datasets/initial/calendar_view.html', assign: url => {target = url;}}, fetch, console,
     setTimeout: fn => timers.push(fn), Intl, FormData: class {append() {}}});
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../demo/document-tools.js'), 'utf8'), context);
-  return {nodes, timers, run: code => vm.runInContext(code, context)};
+  return {nodes, timers, target: () => target, run: code => vm.runInContext(code, context)};
 }
 test('Volume units are decimal and respect the requested target without floating point drift', () => {
   const a = app();
@@ -101,4 +102,30 @@ test('Offline size is explicitly marked as saved metadata', () => {
   assert.equal(a.nodes.get('dataset-size').textContent, '50,003 ГБ');
   assert.match(a.nodes.get('dataset-size-details').textContent, /сохранён при генерации/);
   assert.equal(a.nodes.get('dataset-size-refresh').disabled, true);
+});
+
+test('Successful generation opens the replacement and removes the old completion from browser history', async () => {
+  const id = 'b'.repeat(32); let finish;
+  const a = app({token: 'test-token'}, async url => {
+    if (url === '/api/document-tools') return {json: async () => ({libreOffice: true, ocr: true, languages: ['eng']})};
+    if (url.endsWith('/size')) return {ok: true, json: async () => ({total_bytes: 1000, files: 1})};
+    if (url === '/api/jobs/generate') return {ok: true, json: async () => ({id, kind: 'generation', state: 'queued', target_bytes: 50e9, bytes: 0})};
+    return await new Promise(resolve => {finish = resolve;});
+  });
+  await a.nodes.get('volume-form').onsubmit({preventDefault() {}});
+  finish({ok: true, json: async () => ({id, kind: 'generation', state: 'succeeded', result: {url: '/datasets/replacement/calendar_view.html#/generation', bytes: 50e9}})});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(a.target(), '/datasets/replacement/calendar_view.html#/generation');
+});
+
+test('Restoring an old successful generation never redirects to a retired dataset', async () => {
+  const id = 'c'.repeat(32);
+  const a = app({token: 'test-token'}, async url => {
+    if (url === '/api/document-tools') return {json: async () => ({libreOffice: true, ocr: true, languages: ['eng']})};
+    if (url.endsWith('/size')) return {ok: true, json: async () => ({total_bytes: 1000, files: 1})};
+    return {ok: true, json: async () => ({id, kind: 'generation', state: 'succeeded', result: {url: '/datasets/retired/calendar_view.html', bytes: 50e9}})};
+  }, {}, [{id, kind: 'generation'}]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(a.target(), null);
+  assert.equal(a.nodes.get('volume-result').innerHTML, '');
 });

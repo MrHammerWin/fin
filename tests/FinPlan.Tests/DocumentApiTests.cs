@@ -80,9 +80,8 @@ public sealed class DocumentApiTests(ConversionFixture fixture) : IClassFixture<
             var size = JsonDocument.Parse(await client.GetStringAsync($"/api/datasets/{datasetId}/size")).RootElement;
             Assert.Equal(expectedBytes, size.GetProperty("total_bytes").GetInt64());
             Assert.Equal(Directory.GetFiles(datasetDirectory, "*", SearchOption.AllDirectories).Length, size.GetProperty("files").GetInt32());
-            // New snapshots, private conversion jobs and current.json are outside the initial dataset.
-            initialSize = JsonDocument.Parse(await client.GetStringAsync("/api/datasets/initial/size")).RootElement;
-            Assert.Equal(initialBytes, initialSize.GetProperty("total_bytes").GetInt64());
+            Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/api/datasets/initial/size")).StatusCode);
+            Assert.False(File.Exists(Path.Combine(output, "dataset.json")));
             // Measure the files again rather than returning the stored size from volume-manifest.json.
             File.AppendAllText(Path.Combine(datasetDirectory, "calendar.csv"), "\r\n");
             size = JsonDocument.Parse(await client.GetStringAsync($"/api/datasets/{datasetId}/size")).RootElement;
@@ -93,13 +92,11 @@ public sealed class DocumentApiTests(ConversionFixture fixture) : IClassFixture<
             var path = volume.GetProperty("files")[0].GetProperty("path").GetString();
             Assert.Equal(HttpStatusCode.OK, (await client.GetAsync($"/datasets/{datasetId}/{path}")).StatusCode);
             Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/datasets/{datasetId}/bulk/unknown.csv")).StatusCode);
-            // An archived HTML must not hide new controls or be rewritten merely by viewing it online.
-            var archivedPath = Path.Combine(output, "calendar_view.html");
-            File.WriteAllText(archivedPath, "<html>Saved older interface</html>");
-            var archivedHtml = await client.GetStringAsync("/datasets/initial/calendar_view.html");
-            Assert.Contains("id=\"dataset-size\"", archivedHtml);
-            Assert.Contains("window.finplanRuntime", archivedHtml);
-            Assert.Equal("<html>Saved older interface</html>", File.ReadAllText(archivedPath));
+            using var retiredPage = await client.GetAsync("/datasets/initial/calendar_view.html");
+            Assert.Equal($"/datasets/{datasetId}/calendar_view.html", retiredPage.RequestMessage!.RequestUri!.AbsolutePath);
+            Assert.Contains("id=\"dataset-size\"", await retiredPage.Content.ReadAsStringAsync());
+            Assert.False(File.Exists(Path.Combine(output, "calendar_view.html")));
+            Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/datasets/initial/documents/D-001.docx")).StatusCode);
         }
         finally { await app.StopAsync(); }
     }

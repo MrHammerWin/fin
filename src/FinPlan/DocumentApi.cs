@@ -12,14 +12,12 @@ public static partial class DocumentApi
             try
             {
                 var snapshot = store.Load(id);
-                // The initial snapshot shares its parent with generations and jobs; count only dataset files.
-                string[] metadata = ["dataset.json", "calendar.csv", "duplicates.json", "reports.json", "calendar_view.html", "volume-manifest.json"];
-                var paths = metadata.Select(name => Path.Combine(snapshot.Directory, name)).Where(File.Exists)
+                var paths = DemoStore.MetadataFiles.Select(name => Path.Combine(snapshot.Directory, name)).Where(File.Exists)
                     .Concat(new[] { "documents", "bulk" }.Select(name => Path.Combine(snapshot.Directory, name))
                         .Where(Directory.Exists).SelectMany(path => Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories)));
                 long totalBytes = 0; var files = 0;
                 foreach (var path in paths) { totalBytes += new FileInfo(path).Length; files++; }
-                return Results.Json(new { id = snapshot.Id, total_bytes = totalBytes, files });
+                return Results.Json(new { id = snapshot.Id, total_bytes = totalBytes, files, cleanup_warning = store.CleanupWarning });
             }
             catch (Exception e) when (e is IOException or JsonException) { return Results.NotFound(); }
         });
@@ -36,14 +34,14 @@ public static partial class DocumentApi
             {
                 using var json = await JsonDocument.ParseAsync(context.Request.Body, cancellationToken: context.RequestAborted);
                 var target = json.RootElement.GetProperty("targetBytes").GetInt64();
-                if (target < 20_000_000) return Results.BadRequest(new { error = "Минимальный целевой объём 20 МБ. Для малого примера используйте обычную перегенерацию." });
+                if (target < 20_000_000) return Results.BadRequest(new { error = "Минимальный целевой объём 20 МБ." });
                 var free = new DriveInfo(Path.GetPathRoot(store.Current.Directory)!).AvailableFreeSpace;
-                if (target > free - 5_000_000_000) return Results.BadRequest(new { error = "Недостаточно свободного места: после генерации должно остаться хотя бы 5 ГБ." });
+                if (target > free - 5_000_000_000) return Results.BadRequest(new { error = "Для временного создания нового набора нужно свободное место на его объём и ещё 5 ГБ." });
                 var id = Guid.NewGuid().ToString("N");
                 var view = jobs.Enqueue(id, "generation", async (progress, cancellation) =>
                 {
                     var snapshot = await store.RegenerateAsync(targetBytes: target, progress: progress, cancellation: cancellation);
-                    return new(Url: $"/datasets/{snapshot.Id}/calendar_view.html#/documents", Bytes: snapshot.Data.Volume!.TotalBytes);
+                    return new(Url: $"/datasets/{snapshot.Id}/calendar_view.html#/generation", Warnings: store.CleanupWarning is { } warning ? [warning] : [], Bytes: snapshot.Data.Volume!.TotalBytes);
                 }, target);
                 return Results.Json(view, JsonFiles.Options, statusCode: 202);
             }

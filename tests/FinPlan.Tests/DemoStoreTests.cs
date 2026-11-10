@@ -19,20 +19,75 @@ public sealed class DemoStoreTests(DemoFixture fixture) : IClassFixture<DemoFixt
         return folder;
     }
     [Fact]
-    public async Task SuccessfulRegenerationKeepsPreviousFilesAndSurvivesRestart()
+    public async Task SuccessfulReplacementDeletesPreviousDatasetAndSurvivesRestartWithoutRecreatingInitial()
     {
         var folder = Workspace();
         try
         {
             var store = new DemoStore(Root(), folder);
-            var previous = File.ReadAllText(Path.Combine(folder, "dataset.json"));
             var next = await store.RegenerateAsync(12345);
             Assert.Equal(12345, next.Data.Seed); Assert.Equal(100, next.Data.Documents.Count);
-            Assert.Equal(previous, File.ReadAllText(Path.Combine(folder, "dataset.json")));
+            Assert.False(File.Exists(Path.Combine(folder, "dataset.json")));
+            Assert.Throws<FileNotFoundException>(() => store.Load("initial"));
             Assert.NotEqual("initial", next.Id);
-            Assert.Equal(next.Id, new DemoStore(Root(), folder).Current.Id);
+            var restarted = new DemoStore(Root(), folder, (_, _) => throw new InvalidOperationException("Initial data must not be recreated."));
+            Assert.Equal(next.Id, restarted.Current.Id);
             Assert.Equal(100, Directory.GetFiles(Path.Combine(next.Directory, "documents")).Length);
             Assert.Throws<FileNotFoundException>(() => store.Load("../../etc"));
+            var replacement = await store.RegenerateAsync(54321);
+            Assert.False(Directory.Exists(next.Directory));
+            Assert.Equal(replacement.Id, store.Current.Id);
+            Assert.Single(Directory.GetDirectories(Path.Combine(folder, "generations")));
+            Assert.Null(store.CleanupWarning);
+        }
+        finally { Directory.Delete(folder, true); }
+    }
+    [Fact]
+    public void StartupRemovesLegacyDatasetsButKeepsSelectedDataAndUnrelatedFiles()
+    {
+        var folder = Workspace(); var selected = Guid.NewGuid().ToString("N"); var retired = Guid.NewGuid().ToString("N");
+        try
+        {
+            foreach (var id in new[] { selected, retired })
+            {
+                var path = Path.Combine(folder, "generations", id); Directory.CreateDirectory(path);
+                File.Copy(Path.Combine(folder, "dataset.json"), Path.Combine(path, "dataset.json"));
+                File.WriteAllText(Path.Combine(path, "owned.csv"), "a;b\n1;2");
+            }
+            var notes = Path.Combine(folder, "generations", "user-notes"); Directory.CreateDirectory(notes);
+            File.WriteAllText(Path.Combine(notes, "keep.txt"), "keep");
+            Directory.CreateDirectory(Path.Combine(folder, ".jobs")); File.WriteAllText(Path.Combine(folder, ".jobs", "original.csv"), "keep original");
+            File.WriteAllText(Path.Combine(folder, "custom.txt"), "keep custom");
+            var selectedId = Directory.Exists(Path.Combine(folder, "generations", selected.ToUpperInvariant())) ? selected.ToUpperInvariant() : selected;
+            JsonFiles.Write(Path.Combine(folder, "current.json"), new { Id = selectedId });
+            var store = new DemoStore(Root(), folder);
+            Assert.Equal(Guid.Parse(selected), Guid.Parse(store.Current.Id));
+            Assert.Equal(Guid.Parse(selected), Guid.Parse(store.Load(selected).Id));
+            Assert.True(File.Exists(Path.Combine(store.Current.Directory, "owned.csv")));
+            Assert.False(Directory.Exists(Path.Combine(folder, "generations", retired)));
+            Assert.False(File.Exists(Path.Combine(folder, "dataset.json")));
+            Assert.True(File.Exists(Path.Combine(notes, "keep.txt")));
+            Assert.True(File.Exists(Path.Combine(folder, ".jobs", "original.csv")));
+            Assert.True(File.Exists(Path.Combine(folder, "custom.txt")));
+        }
+        finally { Directory.Delete(folder, true); }
+    }
+    [Fact]
+    public async Task CleanupFailureNeverDeletesThePublishedReplacementAndStartupRetriesCleanup()
+    {
+        var folder = Workspace();
+        try
+        {
+            var store = new DemoStore(Root(), folder);
+            // A directory at an owned file path produces a cleanup error on both Windows and macOS.
+            var obstacle = Path.Combine(folder, "calendar.csv"); Directory.CreateDirectory(obstacle);
+            var next = await store.RegenerateAsync(919);
+            Assert.Equal(next.Id, store.Current.Id);
+            Assert.True(File.Exists(Path.Combine(next.Directory, "dataset.json")));
+            Assert.NotNull(store.CleanupWarning);
+            Directory.Delete(obstacle);
+            var restarted = new DemoStore(Root(), folder);
+            Assert.Equal(next.Id, restarted.Current.Id); Assert.Null(restarted.CleanupWarning);
         }
         finally { Directory.Delete(folder, true); }
     }

@@ -5,6 +5,7 @@ obj/
 /output/.jobs/
 /output/generations/
 /output/current.json
+/output/runtime/
 /packages/
 riderModule.iml
 /_ReSharper.Caches/

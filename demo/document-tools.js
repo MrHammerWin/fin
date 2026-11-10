@@ -9,10 +9,14 @@
   const datasetId = location.pathname?.match(/\/datasets\/([^/]+)\//)?.[1] || 'initial';
   const headers = () => ({'X-FinPlan-Token': runtime.token});
   const savedKey = 'finplan-document-jobs';
-  let remembered = [], volumeOffset = 0, volumeCount = 0;
+  let remembered = [], volumeOffset = 0, volumeCount = 0, generationToOpen = null;
   try { remembered = JSON.parse(localStorage.getItem(savedKey) || '[]').filter(x => /^[a-f0-9]{32}$/.test(x.id)).slice(-8); } catch {}
   function remember(id, kind) {
     remembered = [...remembered.filter(x => x.id !== id), {id, kind}].slice(-8);
+    try { localStorage.setItem(savedKey, JSON.stringify(remembered)); } catch {}
+  }
+  function forget(id) {
+    remembered = remembered.filter(job => job.id !== id);
     try { localStorage.setItem(savedKey, JSON.stringify(remembered)); } catch {}
   }
   function saveTarget() {
@@ -69,6 +73,7 @@
       if (!Number.isSafeInteger(data.total_bytes) || !Number.isSafeInteger(data.files)) throw Error('Не удалось получить размер файлов. Повторите попытку.');
       value.textContent = bytes(data.total_bytes);
       details.textContent = `${Number(data.files).toLocaleString('ru-RU')} файлов на диске: документы, таблицы и файлы календаря открытого набора.`;
+      if (data.cleanup_warning) details.textContent += ' ' + data.cleanup_warning;
     } catch (error) { value.textContent = 'Недоступен'; details.textContent = error.message; }
     finally { button.disabled = false; }
   }
@@ -79,6 +84,7 @@
     const generation = job.kind === 'generation';
     const status = byId(generation ? 'volume-status' : 'conversion-status');
     const active = job.state === 'running' || job.state === 'queued';
+    if (generation && active) generationToOpen = job.id;
     byId(generation ? 'volume-submit' : 'conversion-submit').disabled = active;
     const cancel = byId(generation ? 'volume-cancel' : 'conversion-cancel'); cancel.hidden = !active;
     cancel.onclick = async () => {
@@ -96,7 +102,11 @@
       const r = job.result;
       if (generation) {
         byId('volume-progress').value = 100;
-        result.innerHTML = `<p class="positive">Создано ${esc(bytes(r.bytes))}. <a href="${esc(r.url)}">Открыть созданный набор и манифест</a></p>`;
+        forget(job.id); result.innerHTML = '';
+        if (generationToOpen === job.id) {
+          status.textContent = 'Новый набор готов. Открываем…';
+          location.assign(r.url);
+        } else status.textContent = 'Размер текущего набора указан выше.';
       } else {
         result.innerHTML = `<p class="positive">Готово. <a href="${esc(r.url)}" download>${esc('Скачать ' + r.file_name)}</a> · ${esc(bytes(r.bytes))}</p>` +
           (r.warnings?.length ? `<div class="notice"><strong>Что нужно проверить</strong><ul>${r.warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul></div>` : '');

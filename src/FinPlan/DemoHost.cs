@@ -31,24 +31,6 @@ public static partial class DemoHost
         });
         app.MapGet("/", () => Results.Redirect($"/datasets/{store.Current.Id}/calendar_view.html"));
         app.MapGet("/api/status", () => Results.Json(new { seed = store.Current.Data.Seed, id = store.Current.Id }));
-        app.MapPost("/api/regenerate", async (HttpContext context) =>
-        {
-            // A token in a custom header prevents unrelated websites from triggering local generation.
-            var supplied = context.Request.Headers["X-FinPlan-Token"].ToString();
-            if (supplied.Length != token.Length || !CryptographicOperations.FixedTimeEquals(System.Text.Encoding.UTF8.GetBytes(supplied), System.Text.Encoding.UTF8.GetBytes(token)))
-                return Results.Json(new { error = "Откройте приложение заново через Rider." }, statusCode: 403);
-            try
-            {
-                var snapshot = await store.RegenerateAsync();
-                return Results.Json(new { url = $"/datasets/{snapshot.Id}/calendar_view.html#/home", seed = snapshot.Data.Seed, documents = snapshot.Data.Documents.Count });
-            }
-            catch (GenerationBusyException error) { return Results.Json(new { error = error.Message }, statusCode: 409); }
-            catch (Exception error) when (error is IOException or InvalidOperationException or JsonException)
-            {
-                app.Logger.LogError(error, "Demo generation failed; previous dataset remains current.");
-                return Results.Json(new { error = "Не удалось создать новый набор. Предыдущие данные сохранены. Повторите попытку." }, statusCode: 500);
-            }
-        });
         app.MapGet("/datasets/{id}/{**file}", (string id, string? file, HttpContext context) =>
         {
             if (file is null) return Results.NotFound();
@@ -57,7 +39,11 @@ public static partial class DemoHost
             if (!isDocument && !isBulk && file is not ("calendar_view.html" or "dataset.json" or "calendar.csv" or "reports.json" or "duplicates.json" or "volume-manifest.json")) return Results.NotFound();
             DemoSnapshot snapshot;
             try { snapshot = store.Load(id); }
-            catch (Exception error) when (error is IOException or JsonException) { return Results.NotFound(); }
+            catch (Exception error) when (error is IOException or JsonException)
+            {
+                return file == "calendar_view.html" && (id == "initial" || Guid.TryParseExact(id, "N", out _))
+                    ? Results.Redirect($"/datasets/{store.Current.Id}/calendar_view.html") : Results.NotFound();
+            }
             if (isDocument && !snapshot.Data.Documents.Any(d => d.Path == file)) return Results.NotFound();
             if (isBulk && !DocumentApi.VolumeFileAllowed(snapshot, file)) return Results.NotFound();
             var path = Path.Combine(snapshot.Directory, file);
@@ -66,7 +52,7 @@ public static partial class DemoHost
             context.Response.Headers.XContentTypeOptions = "nosniff";
             if (file == "calendar_view.html")
             {
-                var config = JsonSerializer.Serialize(new { regenerateUrl = "/api/regenerate", token });
+                var config = JsonSerializer.Serialize(new { token });
                 var html = new DemoGenerator(root).RenderHtml(snapshot.Data).Replace("<script id=\"dataset\"", $"<script>window.finplanRuntime={config};</script>\n<script id=\"dataset\"");
                 return Results.Content(html, "text/html; charset=utf-8");
             }

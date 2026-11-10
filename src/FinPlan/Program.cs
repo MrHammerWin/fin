@@ -3,7 +3,7 @@ using System.Text.Json;
 using FinPlan;
 
 var root = FindRoot();
-var output = Path.Combine(root, "output"); var seed = 42; var generate = false; var check = false; var open = true;
+var output = Path.Combine(root, "output", "runtime"); var seed = 42; var generate = false; var check = false; var open = true;
 try
 {
     for (var i = 0; i < args.Length; i++)
