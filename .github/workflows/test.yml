@@ -1,0 +1,54 @@
+name: FinPlan checks
+on:
+  pull_request:
+  push:
+    branches: ['codex/**']
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install document engines on macOS
+        if: runner.os == 'macOS'
+        run: |
+          brew install --cask libreoffice
+          brew install tesseract poppler
+      - name: Install document engines on Windows
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          choco install libreoffice-fresh tesseract poppler -y --no-progress --limit-output
+          $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+          $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+          "$machinePath;$userPath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Install Russian and English OCR models
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force .local-tools/tessdata
+          Invoke-WebRequest https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/rus.traineddata -OutFile .local-tools/tessdata/rus.traineddata
+          Invoke-WebRequest https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/eng.traineddata -OutFile .local-tools/tessdata/eng.traineddata
+      - run: dotnet restore Solution1.sln --locked-mode
+      - name: C# including native conversions and OCR
+        env:
+          FINPLAN_INTEGRATION_TESTS: '1'
+        run: dotnet test Solution1.sln --no-restore --logger trx --results-directory test-results
+      - name: Browser logic
+        run: node --test tests/test_finance.cjs tests/test_viewer.cjs tests/test_document_tools.cjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ matrix.os }}
+          path: test-results

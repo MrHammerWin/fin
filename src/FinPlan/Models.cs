@@ -85,6 +85,7 @@ public sealed class DuplicateReport
 public sealed record Reports(DateOnly Start, DateOnly EndExclusive, Dictionary<string, Dictionary<string, decimal>> Currencies);
 public sealed class Dataset
 {
+    public VolumeSummary? Volume { get; set; }
     public int Version { get; set; } = 6;
     public int Seed { get; set; }
     public string Company { get; set; } = "ООО «Демо Финансы» (вымышленная)";

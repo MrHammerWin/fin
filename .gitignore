@@ -1,5 +1,10 @@
 bin/
 obj/
+/.local-tools/
+.test-artifacts/
+/output/.jobs/
+/output/generations/
+/output/current.json
 /packages/
 riderModule.iml
 /_ReSharper.Caches/

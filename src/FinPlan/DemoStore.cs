@@ -26,19 +26,41 @@ public sealed class DemoStore
         if (!File.Exists(Path.Combine(this.output, "dataset.json"))) this.generate(this.output, 42);
         var currentDirectory = ResolveCurrentDirectory(this.output);
         current = Load(currentDirectory == this.output ? "initial" : Path.GetFileName(currentDirectory));
-        generator.RenderViewer(current.Directory, current.Data);
+        if (current.Data.Volume is not null)
+        {
+            var manifest = JsonSerializer.Deserialize<VolumeManifest>(File.ReadAllText(Path.Combine(current.Directory, "volume-manifest.json")), JsonFiles.Options)
+                ?? throw new InvalidDataException("Не найден манифест большого корпуса.");
+            BulkVolume.Finalize(current.Directory, current.Data, manifest, generator);
+        }
+        else generator.RenderViewer(current.Directory, current.Data);
     }
 
-    public async Task<DemoSnapshot> RegenerateAsync(int? seed = null)
+    public async Task<DemoSnapshot> RegenerateAsync(int? seed = null, long? targetBytes = null, Action<GenerationProgress>? progress = null, CancellationToken cancellation = default)
     {
         if (!await gate.WaitAsync(0)) throw new GenerationBusyException();
         var directory = Path.Combine(output, "generations", Guid.NewGuid().ToString("N"));
         var pointerTemp = Path.Combine(output, ".current-" + Guid.NewGuid().ToString("N") + ".tmp");
         try
         {
+            if (targetBytes is not null)
+            {
+                if (targetBytes <= 0) throw new ArgumentOutOfRangeException(nameof(targetBytes));
+                var available = new DriveInfo(Path.GetPathRoot(output)!).AvailableFreeSpace;
+                if (targetBytes > available - 5_000_000_000) throw new IOException("Для выбранного объёма недостаточно места. После генерации должно остаться хотя бы 5 ГБ.");
+            }
+            cancellation.ThrowIfCancellationRequested();
             var nextSeed = seed ?? RandomNumberGenerator.GetInt32(1, int.MaxValue);
             while (seed is null && nextSeed == Current.Data.Seed) nextSeed = RandomNumberGenerator.GetInt32(1, int.MaxValue);
             var data = await Task.Run(() => generate(directory, nextSeed));
+            if (targetBytes is not null)
+            {
+                await Task.Run(() =>
+                {
+                    var manifest = BulkVolume.Generate(directory, nextSeed, targetBytes.Value, progress, cancellation);
+                    BulkVolume.Finalize(directory, data, manifest, generator);
+                }, cancellation);
+            }
+            cancellation.ThrowIfCancellationRequested();
             var next = new DemoSnapshot(Path.GetFileName(directory), directory, data);
             JsonFiles.Write(pointerTemp, new CurrentReference(next.Id));
             File.Move(pointerTemp, Path.Combine(output, "current.json"), true);

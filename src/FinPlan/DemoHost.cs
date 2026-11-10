@@ -15,8 +15,15 @@ public static partial class DemoHost
         var store = new DemoStore(root, output);
         var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions { ContentRootPath = root });
         builder.WebHost.UseUrls("http://127.0.0.1:0");
+        builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = ConversionContentReader.MaxInputBytes + 1_000_000);
+        builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(options => options.MultipartBodyLengthLimit = ConversionContentReader.MaxInputBytes + 1_000_000);
+        var jobs = new FileJobs(output);
+        builder.Services.AddSingleton(jobs);
+        builder.Services.AddHostedService(services => services.GetRequiredService<FileJobs>());
         var app = builder.Build();
         var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+        var tools = new ConversionTools(root);
+        DocumentApi.Map(app, store, jobs, new DocumentConverter(tools), tools, token);
         app.Use(async (context, next) =>
         {
             if (context.Request.Host.Host is not ("127.0.0.1" or "localhost")) { context.Response.StatusCode = 400; return; }
@@ -46,21 +53,24 @@ public static partial class DemoHost
         {
             if (file is null) return Results.NotFound();
             var isDocument = DocumentPath().IsMatch(file);
-            if (!isDocument && file is not ("calendar_view.html" or "dataset.json" or "calendar.csv" or "reports.json" or "duplicates.json")) return Results.NotFound();
+            var isBulk = file.StartsWith("bulk/", StringComparison.Ordinal);
+            if (!isDocument && !isBulk && file is not ("calendar_view.html" or "dataset.json" or "calendar.csv" or "reports.json" or "duplicates.json" or "volume-manifest.json")) return Results.NotFound();
             DemoSnapshot snapshot;
             try { snapshot = store.Load(id); }
             catch (Exception error) when (error is IOException or JsonException) { return Results.NotFound(); }
             if (isDocument && !snapshot.Data.Documents.Any(d => d.Path == file)) return Results.NotFound();
+            if (isBulk && !DocumentApi.VolumeFileAllowed(snapshot, file)) return Results.NotFound();
             var path = Path.Combine(snapshot.Directory, file);
             if (!File.Exists(path)) return Results.NotFound();
             context.Response.Headers.CacheControl = "no-store";
+            context.Response.Headers.XContentTypeOptions = "nosniff";
             if (file == "calendar_view.html")
             {
                 var config = JsonSerializer.Serialize(new { regenerateUrl = "/api/regenerate", token });
                 var html = File.ReadAllText(path).Replace("<script id=\"dataset\"", $"<script>window.finplanRuntime={config};</script>\n<script id=\"dataset\"");
                 return Results.Content(html, "text/html; charset=utf-8");
             }
-            var mime = Path.GetExtension(file) switch { ".pdf" => "application/pdf", ".docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".csv" => "text/csv; charset=utf-8", _ => "application/json" };
+            var mime = DocumentApi.Mime(file);
             return Results.File(path, mime, enableRangeProcessing: true);
         });
         return app;
