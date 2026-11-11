@@ -1,6 +1,7 @@
 /* The browser holds additive events, while source records are fetched in bounded pages. */
 (() => {
   if (!BASE.corpus) return;
+  $('cards').classList.add('corpus-cards');
   const online = !!window.finplanRuntime;
   const datasetId = location.pathname.match(/\/datasets\/([^/]+)\//)?.[1];
   const count = n => Number(n).toLocaleString('ru-RU');
@@ -46,6 +47,8 @@
       document.querySelectorAll('[data-id]').forEach(button => button.onclick = () => openObligation(button.dataset.id));
     });
   };
+  let searchTimer;
+  $('obligation-search').oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => renderRegistry(), 250); };
   const originalOpen = openObligation;
   openObligation = async function (id) {
     if (!id.startsWith('BO-')) return originalOpen(id);
