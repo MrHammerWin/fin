@@ -29,6 +29,9 @@ public sealed class Obligation
     public string? Contract { get; set; }
     public string? Invoice { get; set; }
     public string? Act { get; set; }
+    public string? ContractId { get; set; }
+    public string? InvoiceId { get; set; }
+    public string? ActId { get; set; }
     public string CounterpartyId { get; set; } = "";
     public string Counterparty { get; set; } = "";
     public string Currency { get; set; } = "";
@@ -86,6 +89,7 @@ public sealed class DuplicateReport
 public sealed record Reports(DateOnly Start, DateOnly EndExclusive, Dictionary<string, Dictionary<string, decimal>> Currencies);
 public sealed class Dataset
 {
+    public CorpusSummary? Corpus { get; set; }
     public IngestionSummary? Ingestion { get; set; }
     public VolumeSummary? Volume { get; set; }
     public int Version { get; set; } = 6;

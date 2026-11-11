@@ -163,6 +163,6 @@ public sealed class DemoGenerator(string root)
     {
         var template = File.ReadAllText(Path.Combine(root, "demo", "viewer.html"));
         var json = JsonSerializer.Serialize(data, JsonFiles.Options).Replace("<", "\\u003c");
-        return template.Replace("__FINANCE__", File.ReadAllText(Path.Combine(root, "demo", "finance.js"))).Replace("__DOCUMENT_TOOLS__", File.ReadAllText(Path.Combine(root, "demo", "document-tools.js"))).Replace("__DATA__", json);
+        return template.Replace("__FINANCE__", File.ReadAllText(Path.Combine(root, "demo", "finance.js"))).Replace("__DOCUMENT_TOOLS__", File.ReadAllText(Path.Combine(root, "demo", "corpus-ui.js")) + "\n" + File.ReadAllText(Path.Combine(root, "demo", "document-tools.js"))).Replace("__DATA__", json);
     }
 }

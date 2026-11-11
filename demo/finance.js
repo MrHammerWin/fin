@@ -37,6 +37,7 @@ const Finance = (() => {
       balances[t.currency] += units(t.amount) * (t.direction === 'in' ? 1n : -1n);
       if (t.obligation) paid[t.obligation] += units(t.amount);
     }
+    for (const t of base.corpus?.cash || []) if (base.opening_date <= t.date && t.date < cutoff) balances[t.currency] += units(t.amount) * (t.direction === 'in' ? 1n : -1n);
     data.obligations = data.obligations.map(o => {
       const outstanding = units(o.amount) - paid[o.id];
       if (outstanding < 0n) throw Error('Оплата превышает сумму обязательства.');
@@ -60,6 +61,11 @@ const Finance = (() => {
         for (const o of data.obligations) if (o.currency === c && o.expected === day) {
           if (o.direction === 'in') incoming += units(o.outstanding); else outgoing += units(o.outstanding);
         }
+        for (const b of base.corpus?.buckets || []) if (b.currency === c && (b.scheduled_date < cutoff ? cutoff : b.scheduled_date) === day) {
+          let remaining = units(b.amount);
+          for (const [date, value] of Object.entries(b.payments)) if (base.opening_date <= date && date < cutoff) remaining -= units(value);
+          if (b.direction === 'in') incoming += remaining; else outgoing += remaining;
+        }
         const opening = balances[c];
         balances[c] += incoming - outgoing;
         currencies[c] = {opening: decimal(opening), in: decimal(incoming), out: decimal(outgoing), closing: decimal(balances[c])};
@@ -71,7 +77,7 @@ const Finance = (() => {
       const v = {opening: 0n, cash_in: 0n, cash_out: 0n, operating_flow: 0n, investing_flow: 0n, financing_flow: 0n, revenue: 0n, cost_of_sales: 0n, operating_expenses: 0n};
       for (const key of Object.keys(categories)) v[key] = 0n;
       for (const a of base.accounts) if (a.currency === c) v.opening += units(a.opening);
-      for (const t of data.operations) if (t.currency === c && base.opening_date <= t.date && t.date < cutoff && t.cash_category !== 'internal_transfer') {
+      for (const t of [...data.operations, ...(base.corpus?.cash || [])]) if (t.currency === c && base.opening_date <= t.date && t.date < cutoff && t.cash_category !== 'internal_transfer') {
         const classification = categories[t.cash_category];
         if (!classification || classification[1] !== t.direction) throw Error('Неизвестная статья ДДС.');
         const value = units(t.amount);
@@ -79,7 +85,7 @@ const Finance = (() => {
         v[t.direction === 'in' ? 'cash_in' : 'cash_out'] += value;
         v[classification[0] + '_flow'] += value * (t.direction === 'in' ? 1n : -1n);
       }
-      for (const entry of base.accruals) if (entry.currency === c && base.opening_date <= entry.recognized_date && entry.recognized_date < cutoff) v[entry.category] += units(entry.amount);
+      for (const entry of [...base.accruals, ...(base.corpus?.pnl || [])]) if (entry.currency === c && base.opening_date <= entry.recognized_date && entry.recognized_date < cutoff) v[entry.category] += units(entry.amount);
       v.net_flow = v.cash_in - v.cash_out;
       v.closing = v.opening + v.net_flow;
       v.gross_profit = v.revenue - v.cost_of_sales;

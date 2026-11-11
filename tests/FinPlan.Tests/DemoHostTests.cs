@@ -62,6 +62,28 @@ public sealed class DemoHostTests(DemoFixture fixture) : IClassFixture<DemoFixtu
             var documentUrl = newPage.Split("calendar_view.html")[0] + "documents/ACT-001.pdf";
             using var pdf = await client.GetAsync(documentUrl);
             Assert.Equal("application/pdf", pdf.Content.Headers.ContentType!.MediaType);
+            var datasetId = JsonDocument.Parse(await client.GetStringAsync("/api/status")).RootElement.GetProperty("id").GetString();
+            var api = $"/api/datasets/{datasetId}";
+            var corpusPage = JsonDocument.Parse(await client.GetStringAsync(api + "/records?query=BO-000000001"));
+            Assert.Single(corpusPage.RootElement.GetProperty("obligations").EnumerateArray());
+            var detail = JsonDocument.Parse(await client.GetStringAsync(api + "/obligations/BO-000000001"));
+            Assert.Equal("BI-000000001", detail.RootElement.GetProperty("obligation").GetProperty("invoice_id").GetString());
+            var bulkManifest = JsonSerializer.Deserialize<VolumeManifest>(File.ReadAllText(Path.Combine(directory, "volume-manifest.json")), JsonFiles.Options)!;
+            foreach (var format in BulkRegister.Formats)
+            {
+                var source = bulkManifest.Files.First(f => f.Kind != "control" && f.Path.EndsWith("." + format, StringComparison.Ordinal));
+                using var sourceResponse = await client.GetAsync(newPage.Split("calendar_view.html")[0] + source.Path);
+                Assert.Equal(HttpStatusCode.OK, sourceResponse.StatusCode); Assert.Equal(DocumentApi.Mime(source.Path).Split(';')[0], sourceResponse.Content.Headers.ContentType!.MediaType);
+            }
+            var dataset = JsonSerializer.Deserialize<Dataset>(File.ReadAllText(Path.Combine(directory, "dataset.json")), JsonFiles.Options)!;
+            var obligation = dataset.Obligations.First(o => o.Outstanding > 1);
+            var manual = new Operation("DEMO-PAY-1", dataset.Cutoff.AddDays(-1), obligation.Account, obligation.Currency, obligation.CounterpartyId, obligation.Counterparty, obligation.Direction, 1, obligation.Id, "Manual test", obligation.Direction == "in" ? "customer_receipts" : "supplier_payments");
+            using var pageRequest = new StringContent(JsonSerializer.Serialize(new CorpusApi.RecordQuery(Kind: "cash", Query: "DEMO-PAY-1", Edits: [manual]), JsonFiles.Options), System.Text.Encoding.UTF8, "application/json");
+            using var editedPage = await client.PostAsync(api + "/records", pageRequest);
+            Assert.Equal(HttpStatusCode.OK, editedPage.StatusCode);
+            var edits = JsonDocument.Parse(await editedPage.Content.ReadAsStringAsync()).RootElement.GetProperty("operations");
+            Assert.Single(edits.EnumerateArray()); Assert.Equal("1.00", edits[0].GetProperty("amount").GetString());
+            Assert.DoesNotContain("DEMO-PAY-1", File.ReadAllText(Path.Combine(directory, "dataset.json")));
             Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/datasets/initial/Program.cs")).StatusCode);
         }
         finally { await app.StopAsync(); }

@@ -193,6 +193,7 @@
     if (!response.ok) { byId('volume-summary').textContent = 'Не удалось прочитать манифест корпуса.'; return; }
     const data = await response.json(); volumeCount = data.total;
     byId('volume-summary').textContent = `${data.summary.measured_target?'Размер после импорта':'Цель'}: ${bytes(data.summary.target_bytes)} · фактически: ${bytes(data.summary.total_bytes)} · файлов: ${data.summary.files} · связанных обязательств: ${Number(data.summary.obligations).toLocaleString('ru-RU')}. ${data.scope}`;
+    if (data.summary.format_files) byId('volume-summary').textContent += ' Файлы по форматам: ' + Object.entries(data.summary.format_files).map(([format, count]) => format.toUpperCase() + ': ' + Number(count).toLocaleString('ru-RU')).join(' · ') + '.';
     byId('volume-manifest').href = 'volume-manifest.json';
     byId('volume-files').innerHTML = data.files.map(f => `<tr><td><a href="${esc(f.path)}" download>${esc(f.path)}</a></td><td>${esc(f.kind)}</td><td>${Number(f.rows).toLocaleString('ru-RU')}</td><td>${esc(bytes(f.bytes))}</td></tr>`).join('');
     byId('volume-page').textContent = `${volumeOffset + 1}–${Math.min(volumeOffset + 25, volumeCount)} из ${volumeCount}`;

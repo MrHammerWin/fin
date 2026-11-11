@@ -9,7 +9,8 @@ public sealed class ImportTransactionTests(ReaderFixture fixture) : IClassFixtur
     private static PreviewFile PreparePlan(string directory, Dataset data)
     {
         var path=Path.Combine(directory,"input-000.csv");List<string[]> rows=[DuplicateChecker.PlanHeader];
-        for(var i=0;i<20;i++) rows.Add([$"P-FILE-{i:000}","CP-001",data.Counterparties.Single(c=>c.Id=="CP-001").Name,"A-RUB","RUB","out","1234.56","2026-11-20","2026-11-20","From file"]);
+        var cp = data.Corpus!.Counterparties.First();
+        for(var i=0;i<20;i++) rows.Add([$"P-FILE-{i:000}",cp.Id,cp.Name,"A-RUB","RUB","out","1234.56","2026-11-20","2026-11-20","From file"]);
         DocumentFiles.Csv(path,rows);return new("plan.csv","documents/import_test.csv",[],FinancialImport.Hash(path),FinancialTemplateReader.Read(path));
     }
     [Fact]

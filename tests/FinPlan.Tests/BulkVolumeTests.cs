@@ -34,7 +34,7 @@ public sealed class BulkVolumeTests : IClassFixture<DemoFixture>
                 var path = Path.Combine(snapshot.Directory, file.Path); using var stream = File.OpenRead(path);
                 Assert.Equal(file.Bytes, stream.Length); Assert.Equal(file.Sha256, Convert.ToHexStringLower(SHA256.HashData(stream)));
                 if (file.Kind == "control") continue;
-                var rows = DocumentContentReader.Read(path).Sections[0].Rows.Skip(1).ToList(); Assert.Equal(file.Rows, rows.Count);
+                var rows = BulkRegister.Read(path).Skip(1).ToList(); Assert.Equal(file.Rows, rows.Count);
                 foreach (var row in rows)
                     switch (file.Kind)
                     {
@@ -44,12 +44,12 @@ public sealed class BulkVolumeTests : IClassFixture<DemoFixture>
                             totals[row[5]] = totals.GetValueOrDefault(row[5]) + decimal.Parse(row[10], CultureInfo.InvariantCulture); break;
                         case "acts": Assert.True(invoices.ContainsKey(row[2])); Assert.Equal(invoices[row[2]][10], row[11]); break;
                         case "bank":
-                            var amount = decimal.Parse(row[7], CultureInfo.InvariantCulture); paid[row[8]] = paid.GetValueOrDefault(row[8]) + amount;
+                            var amount = decimal.Parse(row[6], CultureInfo.InvariantCulture); paid[row[7]] = paid.GetValueOrDefault(row[7]) + amount;
                             paymentTotals[row[3]] = paymentTotals.GetValueOrDefault(row[3]) + amount; break;
                     }
             }
             foreach (var file in manifest.Files.Where(f => f.Kind == "obligations"))
-                foreach (var row in DocumentContentReader.Read(Path.Combine(snapshot.Directory, file.Path)).Sections[0].Rows.Skip(1))
+                foreach (var row in BulkRegister.Read(Path.Combine(snapshot.Directory, file.Path)).Skip(1))
                 {
                     obligations++; var amount = decimal.Parse(row[11], CultureInfo.InvariantCulture); var payment = decimal.Parse(row[12], CultureInfo.InvariantCulture);
                     Assert.Equal(invoices[row[1]][10], row[11]); Assert.InRange(payment, 0, amount);
@@ -57,7 +57,7 @@ public sealed class BulkVolumeTests : IClassFixture<DemoFixture>
                 }
             Assert.Equal(volume.Obligations, obligations);
             foreach (var currency in totals.Keys) { Assert.Equal(totals[currency], manifest.InvoiceTotals[currency]); Assert.Equal(paymentTotals[currency], manifest.PaymentTotals[currency]); }
-            Assert.Equal(100, snapshot.Data.Documents.Count); // The UI never pretends the large corpus was imported into the calendar.
+            Assert.Equal(100, snapshot.Data.Documents.Count); // Core documents stay separate; the corpus contributes through checked additive events.
             var restarted = new DemoStore(root, output).Current;
             Assert.Equal(snapshot.Id, restarted.Id);
             Assert.Equal(BulkVolume.BytesIn(restarted.Directory), restarted.Data.Volume!.TotalBytes);

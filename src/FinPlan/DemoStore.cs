@@ -9,7 +9,7 @@ public sealed class GenerationBusyException() : InvalidOperationException("Ге�
 /// <summary>Publishes a complete replacement before removing the previous dataset.</summary>
 public sealed class DemoStore
 {
-    internal static readonly string[] MetadataFiles = ["dataset.json", "calendar.csv", "duplicates.json", "reports.json", "calendar_view.html", "volume-manifest.json"];
+    internal static readonly string[] MetadataFiles = ["dataset.json", "calendar.csv", "duplicates.json", "reports.json", "calendar_view.html", "volume-manifest.json", "corpus-accounting.json"];
     private readonly string output;
     private readonly DemoGenerator generator;
     private readonly Func<string, int, Dataset> generate;
@@ -63,7 +63,7 @@ public sealed class DemoStore
                 await Task.Run(() =>
                 {
                     var manifest = BulkVolume.Generate(directory, nextSeed, targetBytes.Value, progress, cancellation);
-                    BulkVolume.Finalize(directory, data, manifest, generator);
+                    BulkVolume.Finalize(directory, data, manifest, generator, progress, cancellation);
                 }, cancellation);
             }
             cancellation.ThrowIfCancellationRequested();
@@ -117,7 +117,7 @@ public sealed class DemoStore
                 manifest!.Summary.MeasuredTarget = false;
                 manifest.Summary.TargetBytes = target;
                 manifest.Summary.LastChange = new(operation, bytes, before);
-                BulkVolume.Finalize(directory, data, manifest, generator);
+                BulkVolume.Finalize(directory, data, manifest, generator, progress, cancellation);
                 var actual = data.Volume!.TotalBytes;
                 if (operation == "add" ? actual < before + bytes : actual >= before || Math.Abs(before - actual - bytes) > BulkVolume.ToleranceBytes)
                     throw new InvalidDataException("Не удалось скорректировать объём в пределах допуска. Текущий набор сохранён.");
@@ -177,7 +177,7 @@ public sealed class DemoStore
                 manifest.Files.InsertRange(0, data.Documents.Select(d => new VolumeFile(d.Path, "control", new FileInfo(Path.Combine(directory, d.Path)).Length, 0, d.Sha256)));
                 manifest.Summary.Files = manifest.Files.Count; manifest.Summary.DocumentBytes = manifest.Files.Sum(f => f.Bytes);
                 manifest.Summary.LastChange = null; manifest.Summary.MeasuredTarget = true;
-                BulkVolume.Finalize(directory, data, manifest, generator);
+                BulkVolume.Finalize(directory, data, manifest, generator, progress, cancellation);
             }
             cancellation.ThrowIfCancellationRequested();
             if (FinancialImport.Fingerprint(previous) != preview.Fingerprint) throw new InvalidOperationException("Исходные файлы текущего набора изменились во время обработки. Повторите чтение.");

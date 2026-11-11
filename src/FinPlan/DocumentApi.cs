@@ -70,6 +70,7 @@ public static partial class DocumentApi
             { return Results.BadRequest(new { error = "Укажите действие, текущий набор и объём целым числом байт." }); }
         });
         DocumentIngestionApi.Map(app, store, jobs, tools, token);
+        CorpusApi.Map(app, store, token);
         app.MapGet("/api/jobs/{id}", (string id) =>
         {
             try
@@ -106,6 +107,6 @@ public static partial class DocumentApi
     };
     internal static bool Authorized(HttpContext context, string token) =>
         System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(System.Text.Encoding.UTF8.GetBytes(context.Request.Headers["X-FinPlan-Token"].ToString()), System.Text.Encoding.UTF8.GetBytes(token));
-    [GeneratedRegex(@"^bulk/[A-Za-z0-9_-]+\.csv$")]
+    [GeneratedRegex(@"^bulk/[A-Za-z0-9_-]+\.(csv|xlsx|docx|pdf)$")]
     private static partial Regex BulkPath();
 }

@@ -109,3 +109,10 @@ test('Home offers the generator section without a separate regeneration button',
   app.run("navigate('generation')");
   assert.equal(app.nodes.get('page-title').textContent, 'Генератор данных');
 });
+
+test('Large corpus money keeps every minor unit in the displayed amount', () => {
+  const app = viewer();
+  const text = app.run("fmt('4268913566232593.56','RUB')");
+  assert.match(text, /593,56/);
+  assert.match(app.run("fmt('-0.01','CHF')"), /-0,01/);
+});

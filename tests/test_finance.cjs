@@ -6,6 +6,24 @@ const path = require('node:path');
 const Finance = require('../demo/finance.js');
 const base = JSON.parse(fs.readFileSync(path.join(__dirname, '../output/dataset.json'), 'utf8'));
 
+test('Whole-corpus browser aggregates match C# and an expanded source ledger at several cutoffs', () => {
+  const file = path.join(__dirname, '../.test-artifacts/corpus-parity.json');
+  if (!fs.existsSync(file)) throw Error('Run dotnet test first to build the mixed-format source fixture.');
+  const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const result = Finance.calculate(data);
+  assert.deepEqual(result.calendar, data.calendar);
+  assert.deepEqual(result.reports, data.reports);
+  const expanded = structuredClone(data); expanded.corpus = null;
+  expanded.operations.push(...data.corpus.cash.map((t,i) => ({...t,id:'CORPUS-CASH-'+i,obligation:null})));
+  expanded.accruals.push(...data.corpus.pnl.map((a,i) => ({...a,id:'CORPUS-PNL-'+i})));
+  for (const cutoff of ['2026-10-15','2026-10-29','2026-11-15','2026-12-01','2026-12-31']) {
+    const actual = Finance.calculate(data, [], cutoff), cash = Finance.calculate(expanded, [], cutoff);
+    assert.deepEqual(actual.reports, cash.reports);
+    for (const c of Object.keys(data.rates)) assert.equal(actual.calendar[0].currencies[c].opening, actual.reports.currencies[c].closing);
+    for (const day of actual.calendar) for (const v of Object.values(day.currencies)) assert.equal(Finance.units(v.closing), Finance.units(v.opening)+Finance.units(v.in)-Finance.units(v.out));
+  }
+});
+
 test('Browser calculations match C# baseline for every currency, day and report', () => {
   const current = Finance.calculate(base);
   assert.deepEqual(current.calendar, base.calendar);

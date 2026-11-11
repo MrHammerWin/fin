@@ -37,6 +37,12 @@ try
         if (check)
         {
             FinancialImport.Calculate(output, data);
+            if (DocumentApi.ReadVolume(new("", output, data)) is { } manifest)
+            {
+                data.Corpus = CorpusAccounting.Load(output, manifest, data).Summary;
+                FinanceCalculator.Calculate(data);
+                Console.WriteLine($"Корпус: {data.Corpus.Files} файлов, {data.Corpus.Obligations} обязательств, {data.Corpus.Operations} банковских операций, {data.Corpus.Accruals} начислений учтены в расчётах.");
+            }
             var report = data.Duplicates;
             Console.WriteLine($"Проверено {report.Summary["files"]} файлов. Повторы: документов {report.Documents.Count}, банковских строк {report.Operations.Count}, плановых строк {report.Plans.Count}. Конфликтов нет.");
         }

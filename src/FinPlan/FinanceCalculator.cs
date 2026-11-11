@@ -23,6 +23,8 @@ public static class FinanceCalculator
             balances[t.Currency] += t.Direction == "in" ? t.Amount : -t.Amount;
             if (t.Obligation is not null) paid[t.Obligation] += t.Amount;
         }
+        foreach (var t in data.Corpus?.Cash ?? [])
+            if (data.OpeningDate <= t.Date && t.Date < data.Cutoff) balances[t.Currency] += t.Direction == "in" ? t.Amount : -t.Amount;
         foreach (var o in data.Obligations)
         {
             o.Paid = paid[o.Id]; o.Outstanding = Money(o.Amount - o.Paid);
@@ -40,6 +42,12 @@ public static class FinanceCalculator
                 var items = data.Obligations.Where(o => o.Currency == c && o.Expected == day).ToList();
                 var incoming = items.Where(o => o.Direction == "in").Sum(o => o.Outstanding);
                 var outgoing = items.Where(o => o.Direction == "out").Sum(o => o.Outstanding);
+                foreach (var bucket in data.Corpus?.Buckets ?? [])
+                    if (bucket.Currency == c && (bucket.ScheduledDate < data.Cutoff ? data.Cutoff : bucket.ScheduledDate) == day)
+                    {
+                        var remaining = bucket.Outstanding(data.OpeningDate, data.Cutoff);
+                        if (bucket.Direction == "in") incoming += remaining; else outgoing += remaining;
+                    }
                 var opening = balances[c]; balances[c] += incoming - outgoing;
                 rows[c] = new(opening, incoming, outgoing, balances[c]);
             }
@@ -62,6 +70,10 @@ public static class FinanceCalculator
                 cash[t.CashCategory] += t.Amount;
             }
             var pnl = PnlCategories.Keys.ToDictionary(k => k, _ => 0m);
+            foreach (var t in data.Corpus?.Cash ?? [])
+                if (t.Currency == c && data.OpeningDate <= t.Date && t.Date < data.Cutoff) cash[t.CashCategory] += t.Amount;
+            foreach (var entry in data.Corpus?.Pnl ?? [])
+                if (entry.Currency == c && data.OpeningDate <= entry.RecognizedDate && entry.RecognizedDate < data.Cutoff) pnl[entry.Category] += entry.Amount;
             foreach (var entry in data.Accruals.Where(a => a.Currency == c && data.OpeningDate <= a.RecognizedDate && a.RecognizedDate < data.Cutoff))
             {
                 if (!pnl.ContainsKey(entry.Category)) throw new InvalidDataException("Неизвестная статья ОПиУ.");

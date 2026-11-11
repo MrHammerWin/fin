@@ -8,7 +8,12 @@ public sealed record IngestionSummary(DateTimeOffset ReadAt, int Documents, stri
 public static class FinancialImport
 {
     public static string Hash(string path) { using var stream = File.OpenRead(path); return Convert.ToHexStringLower(SHA256.HashData(stream)); }
-    public static string Fingerprint(DemoSnapshot snapshot) => Convert.ToHexStringLower(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(string.Join('\n', snapshot.Data.Documents.OrderBy(d => d.Path, StringComparer.Ordinal).Select(d => d.Path + ":" + Hash(Path.Combine(snapshot.Directory, d.Path)))))));
+    public static string Fingerprint(DemoSnapshot snapshot)
+    {
+        var documents = snapshot.Data.Documents.OrderBy(d => d.Path, StringComparer.Ordinal).Select(d => d.Path + ":" + Hash(Path.Combine(snapshot.Directory, d.Path)));
+        var bulk = DocumentApi.ReadVolume(snapshot)?.Files.Where(f => f.Kind != "control").Select(f => CorpusAccounting.Signature(snapshot.Directory, f)) ?? [];
+        return Convert.ToHexStringLower(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(string.Join('\n', documents.Concat(bulk)))));
+    }
 
     public static void Calculate(string output, Dataset data)
     {

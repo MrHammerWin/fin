@@ -38,7 +38,7 @@ public sealed class DatasetResizeTests : IClassFixture<DemoFixture>
             Assert.Equal(file.Bytes, new FileInfo(path).Length);
             Assert.Equal(file.Sha256, Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(path))));
             if (file.Kind == "control") continue;
-            var rows = DocumentContentReader.ReadCsv(path).Skip(1).ToList(); Assert.Equal(file.Rows, rows.Count);
+            var rows = BulkRegister.Read(path).Skip(1).ToList(); Assert.Equal(file.Rows, rows.Count);
             foreach (var row in rows)
                 switch (file.Kind)
                 {
@@ -54,7 +54,7 @@ public sealed class DatasetResizeTests : IClassFixture<DemoFixture>
                         totals[row[8]] = totals.GetValueOrDefault(row[8]) + amount; paidTotals[row[8]] = paidTotals.GetValueOrDefault(row[8]) + paid;
                         break;
                     case "bank":
-                        Assert.Contains(row[8], obligations.Keys); bank[row[8]] = bank.GetValueOrDefault(row[8]) + decimal.Parse(row[7], CultureInfo.InvariantCulture); break;
+                        Assert.Contains(row[7], obligations.Keys); bank[row[7]] = bank.GetValueOrDefault(row[7]) + decimal.Parse(row[6], CultureInfo.InvariantCulture); break;
                 }
         }
         Assert.Equal(manifest.Summary.Obligations, obligations.Count);
@@ -75,7 +75,7 @@ public sealed class DatasetResizeTests : IClassFixture<DemoFixture>
             var calendar = File.ReadAllBytes(Path.Combine(initial.Directory, "calendar.csv"));
             var next = await store.ResizeAsync(initial.Id, "add", 1_000_000);
             Preserved(control, next); Verify(next);
-            Assert.Equal(initial.Data.Seed, next.Data.Seed); Assert.Equal(calendar, File.ReadAllBytes(Path.Combine(next.Directory, "calendar.csv")));
+            Assert.Equal(initial.Data.Seed, next.Data.Seed); Assert.NotEqual(calendar, File.ReadAllBytes(Path.Combine(next.Directory, "calendar.csv")));
             var existing = Hashes(next); var before = next.Data.Volume!.TotalBytes;
             var added = await store.ResizeAsync(next.Id, "add", 4_000_000);
             Preserved(existing, added); Verify(added);
@@ -106,7 +106,7 @@ public sealed class DatasetResizeTests : IClassFixture<DemoFixture>
             var keptHashes = Hashes(removed);
             var added = await store.ResizeAsync(removed.Id, "add", 1_000_000); Verify(added); Preserved(keptHashes, added);
             foreach (var file in DocumentApi.ReadVolume(added)!.Files.Where(f => f.Kind == "obligations" && !kept.Files.Any(k => k.Path == f.Path)))
-                foreach (var row in DocumentContentReader.ReadCsv(Path.Combine(added.Directory, file.Path)).Skip(1))
+                foreach (var row in BulkRegister.Read(Path.Combine(added.Directory, file.Path)).Skip(1))
                     Assert.True(long.Parse(row[0][3..], CultureInfo.InvariantCulture) >= oldNextId);
             var restarted = new DemoStore(root, output); Assert.Equal(added.Id, restarted.Current.Id); Verify(restarted.Current);
         }
