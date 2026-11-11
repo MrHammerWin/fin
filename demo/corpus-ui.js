@@ -5,6 +5,7 @@
   const online = !!window.finplanRuntime;
   const datasetId = location.pathname.match(/\/datasets\/([^/]+)\//)?.[1];
   const count = n => Number(n).toLocaleString('ru-RU');
+  const categories = {revenue:'Выручка',cost_of_sales:'Себестоимость',operating_expenses:'Операционные расходы',customer_receipts:'Поступления от покупателей',supplier_payments:'Оплата поставщикам',operating_payments:'Текущие услуги',equipment_purchase:'Оборудование',loan_received:'Получение займа',loan_repaid:'Погашение займа'};
   const all = D.obligations.length + D.corpus.obligations;
   const note = document.createElement('p'); note.id = 'corpus-accounting-summary'; note.className = 'notice';
   note.textContent = `В расчётах: ${count(all)} обязательств, ${count(D.operations.length + D.corpus.operations)} банковских операций, ${count(D.accruals.length + D.corpus.accruals)} начислений. Учтён весь корпус из ${count(D.corpus.files)} файлов. Итоги пересчитываются по выбранной дате; исходные записи открываются по страницам.`;
@@ -63,8 +64,8 @@
   const originalReports = renderReports;
   renderReports = function () {
     originalReports(); if (!online) return;
-    load('pnl', 'pnl', {}, page => { $('pnl-sources').innerHTML = page.accruals.map(a => `<tr><td>${esc(a.recognized_date)}</td><td>${esc(a.counterparty)}<br>${esc(a.category)}<br>${esc(a.id)} · ${esc(a.obligation)}</td><td>${fmt(a.amount, a.currency)}</td><td>${link(a.source)}</td></tr>`).join(''); });
-    load('cashflow', 'cash', {}, page => { $('cashflow-sources').innerHTML = page.operations.map(t => `<tr><td>${esc(t.date)}<br>${esc(t.id)}</td><td>${esc(t.counterparty)}<br>${esc(t.cash_category)}</td><td>${t.direction === 'in' ? 'Поступление' : 'Выплата'}</td><td>${fmt(t.amount, t.currency)}</td><td>${t.source ? link(t.source) + ' · строка ' + t.row : 'Демонстрационная ручная оплата'}</td></tr>`).join(''); });
+    load('pnl', 'pnl', {}, page => { $('pnl-sources').innerHTML = page.accruals.map(a => `<tr><td>${esc(a.recognized_date)}</td><td>${esc(a.counterparty)}<br>${esc(categories[a.category] || a.category)}<br>${esc(a.id)} · ${esc(a.obligation)}</td><td>${fmt(a.amount, a.currency)}</td><td>${link(a.source)}</td></tr>`).join(''); });
+    load('cashflow', 'cash', {}, page => { $('cashflow-sources').innerHTML = page.operations.map(t => `<tr><td>${esc(t.date)}<br>${esc(t.id)}</td><td>${esc(t.counterparty)}<br>${esc(categories[t.cash_category] || t.cash_category)}</td><td>${t.direction === 'in' ? 'Поступление' : 'Выплата'}</td><td>${fmt(t.amount, t.currency)}</td><td>${t.source ? link(t.source) + ' · строка ' + t.row : 'Демонстрационная ручная оплата'}</td></tr>`).join(''); });
   };
   const originalRefresh = refresh;
   refresh = function () {
