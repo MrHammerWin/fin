@@ -5,7 +5,7 @@ namespace FinPlan;
 
 public static partial class DocumentApi
 {
-    public static void Map(WebApplication app, DemoStore store, FileJobs jobs, DocumentConverter converter, ConversionTools tools, string token)
+    public static void Map(WebApplication app, DemoStore store, FileJobs jobs, RecognitionTools tools, string token)
     {
         app.MapGet("/api/datasets/{id}/size", (string id) =>
         {
@@ -19,12 +19,6 @@ public static partial class DocumentApi
                 return Results.Json(new { id = snapshot.Id, total_bytes = totalBytes, files, removable_bytes = manifest is null ? 0 : BulkVolume.RemovableBytes(manifest), last_change = manifest?.Summary.LastChange, cleanup_warning = store.CleanupWarning }, JsonFiles.Options);
             }
             catch (Exception e) when (e is IOException or JsonException) { return Results.NotFound(); }
-        });
-        app.MapGet("/api/document-tools", async () =>
-        {
-            string[] languages;
-            try { languages = await tools.LanguagesAsync(); } catch (InvalidOperationException) { languages = []; }
-            return Results.Json(new { formats = ConversionContentReader.Formats, maxInputBytes = ConversionContentReader.MaxInputBytes, libreOffice = tools.Office is not null, ocr = tools.Tesseract is not null && tools.PdfToPpm is not null, languages });
         });
         app.MapPost("/api/jobs/generate", async (HttpContext context) =>
         {
@@ -75,80 +69,19 @@ public static partial class DocumentApi
             catch (Exception e) when (e is JsonException or KeyNotFoundException or InvalidOperationException or FormatException)
             { return Results.BadRequest(new { error = "Укажите действие, текущий набор и объём целым числом байт." }); }
         });
-        app.MapPost("/api/conversions", async (HttpContext context) =>
-        {
-            if (!Authorized(context, token)) return Results.StatusCode(403);
-            string? directory = null;
-            try
-            {
-                if (!context.Request.HasFormContentType) return Results.BadRequest(new { error = "Ожидается форма с файлом или ссылкой на документ набора." });
-                var form = await context.Request.ReadFormAsync(context.RequestAborted);
-                var target = form["target"].ToString().ToLowerInvariant();
-                if (!ConversionContentReader.Formats.Contains(target)) return Results.BadRequest(new { error = "Неизвестный выходной формат." });
-                var id = Guid.NewGuid().ToString("N"); directory = jobs.DirectoryFor(id); Directory.CreateDirectory(directory);
-                var upload = form.Files.GetFile("file"); string originalName; string input;
-                if (upload is not null)
-                {
-                    if (upload.Length == 0 || upload.Length > ConversionContentReader.MaxInputBytes) throw new InvalidDataException("Размер загружаемого файла должен быть от 1 байта до 100 МБ.");
-                    originalName = Path.GetFileName(upload.FileName.Replace('\\', '/'));
-                    var ext = ConversionContentReader.Format(originalName); input = Path.Combine(directory, "original." + ext);
-                    await using var file = new FileStream(input, FileMode.CreateNew, FileAccess.Write);
-                    await upload.CopyToAsync(file, context.RequestAborted);
-                }
-                else
-                {
-                    var snapshot = store.Load(form["datasetId"].ToString()); var source = form["source"].ToString();
-                    var allowed = snapshot.Data.Documents.Any(d => d.Path == source) || VolumeFileAllowed(snapshot, source);
-                    if (!allowed) throw new InvalidDataException("Документ отсутствует в выбранном наборе.");
-                    var sourcePath = Path.Combine(snapshot.Directory, source);
-                    if (new FileInfo(sourcePath).Length > ConversionContentReader.MaxInputBytes) throw new InvalidDataException("Для конвертации выберите файл до 100 МБ.");
-                    originalName = Path.GetFileName(source); input = Path.Combine(directory, "original." + ConversionContentReader.Format(source)); File.Copy(sourcePath, input);
-                }
-                ConversionContentReader.Validate(input);
-                if (ConversionContentReader.Format(input) == target) throw new InvalidDataException("Выберите формат, отличный от исходного.");
-                File.WriteAllText(Path.Combine(directory, "source-name.txt"), originalName);
-                var options = new ConversionOptions(target, form["ocr"].ToString() is { Length: > 0 } ocr ? ocr : "auto", form["languages"].ToString() is { Length: > 0 } lang ? lang : "rus+eng");
-                var workDirectory = directory;
-                var view = jobs.Enqueue(id, "conversion", async (progress, cancellation) =>
-                {
-                    var result = await converter.ConvertAsync(input, workDirectory, options, text => progress(new(0, 0, 0, text)), cancellation);
-                    var filename = Path.GetFileNameWithoutExtension(originalName) + "." + result.Format;
-                    return new(Url: $"/api/jobs/{id}/download", FileName: filename, FilePath: result.Path, Warnings: result.Warnings, OcrPages: result.OcrPages, Bytes: new FileInfo(result.Path).Length);
-                });
-                return Results.Json(view, JsonFiles.Options, statusCode: 202);
-            }
-            catch (GenerationBusyException e) { return Results.Json(new { error = e.Message }, statusCode: 409); }
-            catch (Exception e) when (e is IOException or InvalidDataException or ArgumentException or JsonException or FormatException or System.Xml.XmlException)
-            {
-                if (directory is not null && Directory.Exists(directory)) Directory.Delete(directory, true);
-                return Results.BadRequest(new { error = e is InvalidDataException ? e.Message : "Не удалось принять документ. Проверьте формат и содержимое файла." });
-            }
-        });
+        DocumentIngestionApi.Map(app, store, jobs, tools, token);
         app.MapGet("/api/jobs/{id}", (string id) =>
         {
             try
             {
                 var view = jobs.Get(id);
                 if (view is null) return Results.NotFound();
-                // Never publish server-side file paths.
-                if (view.Result is { } result) view.Result = result with { FilePath = null };
                 return Results.Json(view, JsonFiles.Options);
             }
             catch (Exception e) when (e is IOException or JsonException) { return Results.NotFound(); }
         });
         app.MapDelete("/api/jobs/{id}", (string id, HttpContext context) =>
             !Authorized(context, token) ? Results.StatusCode(403) : jobs.Cancel(id) ? Results.Accepted() : Results.NotFound());
-        app.MapGet("/api/jobs/{id}/download", (string id, HttpContext context) =>
-        {
-            try
-            {
-                var path = jobs.Download(id); if (path is null) return Results.NotFound();
-                context.Response.Headers.XContentTypeOptions = "nosniff";
-                context.Response.Headers.CacheControl = "no-store";
-                return Results.File(path, Mime(path), jobs.Get(id)!.Result!.FileName, enableRangeProcessing: true);
-            }
-            catch (Exception e) when (e is IOException or JsonException) { return Results.NotFound(); }
-        });
         app.MapGet("/api/datasets/{id}/volume", (string id, int? offset, int? limit) =>
         {
             try
@@ -171,7 +104,7 @@ public static partial class DocumentApi
     {
         ".pdf" => "application/pdf", ".docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".csv" => "text/csv; charset=utf-8", _ => "application/json"
     };
-    private static bool Authorized(HttpContext context, string token) =>
+    internal static bool Authorized(HttpContext context, string token) =>
         System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(System.Text.Encoding.UTF8.GetBytes(context.Request.Headers["X-FinPlan-Token"].ToString()), System.Text.Encoding.UTF8.GetBytes(token));
     [GeneratedRegex(@"^bulk/[A-Za-z0-9_-]+\.csv$")]
     private static partial Regex BulkPath();

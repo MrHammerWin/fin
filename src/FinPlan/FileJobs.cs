@@ -4,7 +4,7 @@ using System.Threading.Channels;
 
 namespace FinPlan;
 
-public sealed record FileJobResult(string? Url = null, string? FileName = null, string? FilePath = null, List<string>? Warnings = null, int OcrPages = 0, long Bytes = 0);
+public sealed record FileJobResult(string? Url = null, List<string>? Warnings = null, long Bytes = 0, ImportPreview? Preview = null);
 public sealed class FileJobView
 {
     public string Id { get; set; } = "";
@@ -65,11 +65,6 @@ public sealed class FileJobs : BackgroundService
             if (work.View.State is not ("queued" or "running")) return false;
             work.Cancellation.Cancel(); return true;
         }
-    }
-    public string? Download(string id)
-    {
-        var view = Get(id);
-        return view?.State == "succeeded" && view.Result?.FilePath is { } path && File.Exists(path) ? path : null;
     }
     private static FileJobView Clone(FileJobView view) => new()
     {

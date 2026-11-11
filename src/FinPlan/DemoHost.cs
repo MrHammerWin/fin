@@ -15,15 +15,15 @@ public static partial class DemoHost
         var store = new DemoStore(root, output);
         var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions { ContentRootPath = root });
         builder.WebHost.UseUrls("http://127.0.0.1:0");
-        builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = ConversionContentReader.MaxInputBytes + 1_000_000);
-        builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(options => options.MultipartBodyLengthLimit = ConversionContentReader.MaxInputBytes + 1_000_000);
+        builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = DocumentContentReader.MaxInputBytes + 1_000_000);
+        builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(options => options.MultipartBodyLengthLimit = DocumentContentReader.MaxInputBytes + 1_000_000);
         var jobs = new FileJobs(output);
         builder.Services.AddSingleton(jobs);
         builder.Services.AddHostedService(services => services.GetRequiredService<FileJobs>());
         var app = builder.Build();
         var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
-        var tools = new ConversionTools(root);
-        DocumentApi.Map(app, store, jobs, new DocumentConverter(tools), tools, token);
+        var tools = new RecognitionTools(root);
+        DocumentApi.Map(app, store, jobs, tools, token);
         app.Use(async (context, next) =>
         {
             if (context.Request.Host.Host is not ("127.0.0.1" or "localhost")) { context.Response.StatusCode = 400; return; }

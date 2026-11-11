@@ -1,4 +1,4 @@
-/* Web-only controls. Original documents stay on disk; conversion runs on the C# worker. */
+/* Web-only controls. Original documents stay on disk; reading and import run on the C# worker. */
 (() => {
   const runtime = window.finplanRuntime;
   const byId = id => document.getElementById(id);
@@ -10,7 +10,7 @@
   const headers = () => ({'X-FinPlan-Token': runtime.token});
   const savedKey = 'finplan-document-jobs';
   let remembered = [], volumeOffset = 0, volumeCount = 0, generationToOpen = null;
-  try { remembered = JSON.parse(localStorage.getItem(savedKey) || '[]').filter(x => /^[a-f0-9]{32}$/.test(x.id)).slice(-8); } catch {}
+  try { remembered = JSON.parse(localStorage.getItem(savedKey) || '[]').filter(x => /^[a-f0-9]{32}$/.test(x.id) && ['generation','reading','import'].includes(x.kind)).slice(-8); } catch {}
   function remember(id, kind) {
     remembered = [...remembered.filter(x => x.id !== id), {id, kind}].slice(-8);
     try { localStorage.setItem(savedKey, JSON.stringify(remembered)); } catch {}
@@ -33,23 +33,32 @@
   // Exposed only to make unit conversion independently testable without running the server.
   window.finplanDocumentTools = {targetBytes};
   function setSourceKind() {
-    const generated = byId('conversion-source-kind').value === 'generated';
-    byId('conversion-upload-field').hidden = generated;
-    byId('conversion-generated-field').hidden = !generated;
-    updateWarning();
+    const generated = byId('read-source-kind').value === 'generated';
+    byId('read-upload-field').hidden = generated; byId('read-generated-field').hidden = !generated;
   }
-  function updateWarning() {
-    const name = byId('conversion-source-kind').value === 'generated' ? byId('conversion-generated').value : byId('conversion-upload').files?.[0]?.name || '';
-    const source = name.split('.').pop().toLowerCase(); const target = byId('conversion-target').value;
-    byId('conversion-warning').textContent = source === target ? 'Выберите формат, отличный от исходного.' : source === 'pdf'
-      ? 'Для PDF структура таблиц восстанавливается по расположению текста. OCR может ошибаться в суммах и датах. Изображения и исходная вёрстка не переносятся; проверьте результат.'
-      : target === 'pdf' ? 'PDF создаётся через LibreOffice. Переносы страниц и шрифты могут отличаться от Microsoft Office.'
-      : 'Сохраняются текст и значения таблиц. Оформление, изображения и объединения ячеек теряются; формулы XLSX заменяются сохранёнными результатами. Все листы попадут в результат с названиями разделов.';
+  byId('read-generated').innerHTML = BASE.documents.map(d => `<option value="${esc(d.path)}">${esc(d.path.split('/').pop())}</option>`).join('');
+  byId('read-source-kind').onchange = setSourceKind; setSourceKind();
+  const fields = {company:'Компания',contract:'Номер договора',contract_date:'Дата договора',invoice:'Номер счёта',invoice_date:'Дата счёта',act:'Номер акта',recognized_date:'Дата признания',counterparty_id:'ID контрагента',counterparty:'Контрагент',currency:'Валюта',amount:'Сумма',account:'Счёт компании',direction:'Направление',due:'Срок оплаты',scheduled:'Ожидаемая дата',obligation_id:'ID обязательства',pnl_category:'Статья ОПиУ',period_start:'Начало периода',period_end:'Конец периода',opening:'Входящий остаток',incoming:'Поступления',outgoing:'Списания',closing:'Исходящий остаток'};
+  const types = {unrecognized:'Требуется исправить исходный файл',contract:'Договор',invoice:'Счёт',act:'Акт',bank_statement:'Выписка',plan:'План'};
+  let previewJob = null, importToOpen = null, previewApplicable = false;
+  function showPreview(id, preview) {
+    previewApplicable = preview.files.every(file=>file.document.can_apply !== false);
+    previewJob = id; byId('read-confirmed').checked = false; byId('read-apply').disabled = true;
+    byId('read-result').innerHTML = preview.files.map(file => {
+      const d = file.document;
+      return `<h3>${esc(file.name)} · ${esc(types[d.type] || d.type)}</h3><p>${file.replaces.length ? 'Будут заменены прежние представления документа: '+file.replaces.map(esc).join(', ') : 'Будет добавлен новый документ.'}</p>` +
+        (d.warnings.length ? `<div class="notice">${d.warnings.map(esc).join('<br>')}</div>` : '') +
+        `<div class="scroll"><table><thead><tr><th>Поле</th><th>Прочитанное значение</th><th>Источник в файле</th></tr></thead><tbody>${d.fields.map(f=>`<tr><td>${esc(fields[f.name] || f.name)}</td><td>${esc(f.value)}</td><td>${esc(f.location)}</td></tr>`).join('')}</tbody></table></div>` +
+        (d.rows.length ? `<p>Записей в таблице: ${Math.max(0,d.rows.length-1)}. Ниже первые 100 строк.</p><div class="scroll"><table><tbody>${d.rows.slice(0,101).map((row,i)=>`<tr>${row.map(v=>`<${i?'td':'th'}>${esc(v)}</${i?'td':'th'}>`).join('')}</tr>`).join('')}</tbody></table></div>` : '');
+    }).join('');
+    byId('read-apply-box').hidden = false;
   }
-  byId('conversion-generated').innerHTML = BASE.documents.map(d => `<option value="${esc(d.path)}">${esc(d.path.split('/').pop())}</option>`).join('');
-  byId('conversion-source-kind').onchange = setSourceKind;
-  for (const id of ['conversion-target', 'conversion-generated', 'conversion-upload']) byId(id).onchange = updateWarning;
-  setSourceKind();
+  byId('read-confirmed').onchange = () => { byId('read-apply').disabled = !byId('read-confirmed').checked || !previewJob || !previewApplicable; };
+  if (BASE.ingestion) {
+    byId('ingestion-summary').textContent = `Обработано ${BASE.ingestion.documents} документов: ${BASE.ingestion.formats.map(s=>s.toUpperCase()).join(', ')}. Финансовые поля прочитаны из файлов; актуальность извлечения проверяется по SHA-256.`;
+    byId('ingestion-warnings').hidden = !BASE.ingestion.warnings.length;
+    byId('ingestion-warning-list').innerHTML = BASE.ingestion.warnings.map(w=>`<p>${esc(w)}</p>`).join('');
+  }
   try {
     const saved = JSON.parse(localStorage.getItem('finplan-volume-target') || 'null');
     if (saved && /^(MB|GB)$/.test(saved.unit)) {
@@ -101,68 +110,70 @@
   loadDatasetSize();
   function offline(status) { byId(status).textContent = 'Для обработки файлов запустите приложение через ▶ в Rider или как локальное веб-приложение .NET.'; }
   function jobUi(job) {
-    const generation = job.kind === 'generation';
-    const status = byId(generation ? 'volume-status' : 'conversion-status');
+    const generation = job.kind === 'generation', importing = job.kind === 'import';
     const active = job.state === 'running' || job.state === 'queued';
+    const status = byId(generation ? 'volume-status' : 'read-status');
     if (generation && active) generationToOpen = job.id;
-    byId(generation ? 'volume-submit' : 'conversion-submit').disabled = active;
+    if (importing && active) importToOpen = job.id;
+    byId(generation ? 'volume-submit' : 'read-submit').disabled = active;
     if (generation) byId('volume-operation').disabled = active;
-    const cancel = byId(generation ? 'volume-cancel' : 'conversion-cancel'); cancel.hidden = !active;
+    if (importing) byId('read-apply').disabled = active;
+    const cancel = byId(generation ? 'volume-cancel' : 'read-cancel'); cancel.hidden = !active;
     cancel.onclick = async () => {
-      const response = await fetch('/api/jobs/' + job.id, {method: 'DELETE', headers: headers()});
-      if (response.ok) { cancel.disabled = true; status.textContent = 'Отменяем задание и убираем незавершённый набор…'; }
+      const response = await fetch('/api/jobs/'+job.id,{method:'DELETE',headers:headers()});
+      if(response.ok){cancel.disabled=true;status.textContent='Отменяем задание; текущий набор останется прежним…';}
     };
-    cancel.disabled = false;
-    status.textContent = job.error || job.message;
+    cancel.disabled = false; status.textContent = job.error || job.message;
     if (generation && job.target_bytes) {
-      byId('volume-progress').hidden = false; byId('volume-progress').value = Math.min(100, job.bytes / job.target_bytes * 100);
-      if (active) status.textContent += ' · ' + bytes(job.bytes) + ' из ' + bytes(job.target_bytes) + ' · обязательств: ' + Number(job.obligations).toLocaleString('ru-RU');
+      byId('volume-progress').hidden = false; byId('volume-progress').value = Math.min(100,job.bytes/job.target_bytes*100);
+      if(active) status.textContent += ' · '+bytes(job.bytes)+' из '+bytes(job.target_bytes)+' · обязательств: '+Number(job.obligations).toLocaleString('ru-RU');
     }
-    const result = byId(generation ? 'volume-result' : 'conversion-result');
     if (job.state === 'succeeded' && job.result) {
-      const r = job.result;
-      if (generation) {
-        byId('volume-progress').value = 100;
-        forget(job.id); result.innerHTML = '';
-        if (generationToOpen === job.id) {
-          status.textContent = 'Новый набор готов. Открываем…';
-          location.assign(r.url);
-        } else status.textContent = 'Размер текущего набора указан выше.';
-      } else {
-        result.innerHTML = `<p class="positive">Готово. <a href="${esc(r.url)}" download>${esc('Скачать ' + r.file_name)}</a> · ${esc(bytes(r.bytes))}</p>` +
-          (r.warnings?.length ? `<div class="notice"><strong>Что нужно проверить</strong><ul>${r.warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul></div>` : '');
-      }
+      if(generation || importing) {
+        forget(job.id);
+        if(generation) {byId('volume-progress').value=100;byId('volume-result').innerHTML='';}
+        if((generation && generationToOpen===job.id)||(importing && importToOpen===job.id)) {status.textContent='Готово. Открываем текущий набор…';location.assign(job.result.url);}
+        else status.textContent='Изменения уже применены. Откройте текущий набор.';
+      } else if(job.result.preview) showPreview(job.id,job.result.preview);
     }
     return active;
   }
-  async function poll(id, kind) {
+  async function poll(id,kind) {
     try {
-      const response = await fetch('/api/jobs/' + id, {cache: 'no-store'});
-      if (!response.ok) throw Error('Задание не найдено. Повторите обработку.');
-      const job = await response.json();
-      if (jobUi(job)) setTimeout(() => poll(id, kind), 1000);
-    } catch (error) {
-      byId(kind === 'generation' ? 'volume-status' : 'conversion-status').textContent = error.message + ' Статус проверится повторно после восстановления соединения.';
-      setTimeout(() => poll(id, kind), 5000);
+      const response=await fetch('/api/jobs/'+id,{cache:'no-store'});
+      if(!response.ok) throw Error('Задание не найдено. Повторите обработку.');
+      if(jobUi(await response.json())) setTimeout(()=>poll(id,kind),1000);
+    } catch(error) {
+      byId(kind==='generation'?'volume-status':'read-status').textContent=error.message+' Статус проверится повторно после восстановления соединения.';
+      setTimeout(()=>poll(id,kind),5000);
     }
   }
-  byId('conversion-form').onsubmit = async event => {
-    event.preventDefault(); if (!runtime) { offline('conversion-status'); return; }
-    const button = byId('conversion-submit'); button.disabled = true; byId('conversion-result').innerHTML = '';
-    byId('conversion-status').textContent = 'Загружаем и проверяем документ…';
+  byId('read-form').onsubmit=async event=>{
+    event.preventDefault();if(!runtime){offline('read-status');return;}
+    byId('read-submit').disabled=true;byId('read-result').innerHTML='';byId('read-apply-box').hidden=true;previewJob=null;
+    byId('read-status').textContent='Читаем финансовые поля документов…';
     try {
-      const form = new FormData();
-      if (byId('conversion-source-kind').value === 'upload') {
-        const file = byId('conversion-upload').files[0];
-        if (!file) throw Error('Выберите исходный файл.');
-        if (file.size > 100000000) throw Error('Размер входного файла ограничен 100 МБ.');
-        form.append('file', file);
-      } else { form.append('datasetId', datasetId); form.append('source', byId('conversion-generated').value); }
-      form.append('target', byId('conversion-target').value); form.append('ocr', byId('conversion-ocr').value); form.append('languages', byId('conversion-languages').value);
-      const response = await fetch('/api/conversions', {method: 'POST', headers: headers(), body: form});
-      const job = await response.json(); if (!response.ok) throw Error(job.error || 'Не удалось принять документ.');
-      remember(job.id, 'conversion'); jobUi(job); poll(job.id, 'conversion');
-    } catch (error) { byId('conversion-status').textContent = error.message; button.disabled = false; }
+      const form=new FormData();form.append('datasetId',datasetId);
+      if(byId('read-source-kind').value==='upload') {
+        const files=[...byId('read-upload').files];
+        if(!files.length)throw Error('Выберите документы по шаблонам проекта.');
+        if(files.length>100 || files.reduce((n,f)=>n+f.size,0)>100000000)throw Error('Можно загрузить до 100 файлов общим размером 100 МБ.');
+        files.forEach(file=>form.append('files',file));
+      } else form.append('source',byId('read-generated').value);
+      form.append('ocr',byId('read-ocr').value);form.append('languages',byId('read-languages').value);
+      const response=await fetch('/api/jobs/read',{method:'POST',headers:headers(),body:form});
+      const job=await response.json();if(!response.ok)throw Error(job.error||'Не удалось прочитать документы.');
+      remember(job.id,'reading');jobUi(job);poll(job.id,'reading');
+    } catch(error){byId('read-status').textContent=error.message;byId('read-submit').disabled=false;}
+  };
+  byId('read-apply').onclick=async()=>{
+    if(!runtime||!previewJob||!previewApplicable||!byId('read-confirmed').checked)return;
+    byId('read-apply').disabled=true;
+    try {
+      const response=await fetch('/api/jobs/'+previewJob+'/apply',{method:'POST',headers:{...headers(),'Content-Type':'application/json'},body:JSON.stringify({confirmed:true})});
+      const job=await response.json();if(!response.ok)throw Error(job.error||'Не удалось применить документы.');
+      remember(job.id,'import');jobUi(job);poll(job.id,'import');
+    } catch(error){byId('read-status').textContent=error.message;byId('read-apply').disabled=false;}
   };
   byId('volume-form').onsubmit = async event => {
     event.preventDefault(); if (!runtime) { offline('volume-status'); return; }
@@ -181,25 +192,21 @@
     const response = await fetch(`/api/datasets/${datasetId}/volume?offset=${volumeOffset}&limit=25`);
     if (!response.ok) { byId('volume-summary').textContent = 'Не удалось прочитать манифест корпуса.'; return; }
     const data = await response.json(); volumeCount = data.total;
-    byId('volume-summary').textContent = `Цель: ${bytes(data.summary.target_bytes)} · фактически: ${bytes(data.summary.total_bytes)} · файлов: ${data.summary.files} · связанных обязательств: ${Number(data.summary.obligations).toLocaleString('ru-RU')}. ${data.scope}`;
+    byId('volume-summary').textContent = `${data.summary.measured_target?'Размер после импорта':'Цель'}: ${bytes(data.summary.target_bytes)} · фактически: ${bytes(data.summary.total_bytes)} · файлов: ${data.summary.files} · связанных обязательств: ${Number(data.summary.obligations).toLocaleString('ru-RU')}. ${data.scope}`;
     byId('volume-manifest').href = 'volume-manifest.json';
-    byId('volume-files').innerHTML = data.files.map(f => `<tr><td><a href="${esc(f.path)}" download>${esc(f.path)}</a></td><td>${esc(f.kind)}</td><td>${Number(f.rows).toLocaleString('ru-RU')}</td><td>${esc(bytes(f.bytes))}</td><td><button type="button" data-convert-source="${esc(f.path)}">Преобразовать</button></td></tr>`).join('');
+    byId('volume-files').innerHTML = data.files.map(f => `<tr><td><a href="${esc(f.path)}" download>${esc(f.path)}</a></td><td>${esc(f.kind)}</td><td>${Number(f.rows).toLocaleString('ru-RU')}</td><td>${esc(bytes(f.bytes))}</td></tr>`).join('');
     byId('volume-page').textContent = `${volumeOffset + 1}–${Math.min(volumeOffset + 25, volumeCount)} из ${volumeCount}`;
     byId('volume-prev').disabled = volumeOffset === 0; byId('volume-next').disabled = volumeOffset + 25 >= volumeCount;
-    document.querySelectorAll('[data-convert-source]').forEach(button => button.onclick = () => {
-      const path = button.dataset.convertSource;
-      if (![...byId('conversion-generated').options].some(o => o.value === path)) byId('conversion-generated').add(new Option(path, path));
-      byId('conversion-source-kind').value = 'generated'; byId('conversion-generated').value = path; setSourceKind(); navigate('converter');
-    });
+
   }
   byId('volume-prev').onclick = () => { volumeOffset = Math.max(0, volumeOffset - 25); loadVolume().catch(e => byId('volume-summary').textContent = e.message); };
   byId('volume-next').onclick = () => { volumeOffset += 25; loadVolume().catch(e => byId('volume-summary').textContent = e.message); };
   if (runtime) {
-    fetch('/api/document-tools').then(r => r.json()).then(info => {
-      byId('conversion-capabilities').textContent = `PDF через LibreOffice: ${info.libreOffice ? 'доступен' : 'нужно установить LibreOffice'}. OCR: ${info.ocr ? 'доступен' : 'нужны Tesseract и Poppler'}. Языки: ${info.languages.join(', ') || 'не установлены'}.`;
-    }).catch(() => byId('conversion-capabilities').textContent = 'Не удалось проверить доступность движков.');
+    fetch('/api/document-reader').then(r => r.json()).then(info => {
+      byId('read-capabilities').textContent = `Чтение DOCX, XLSX, CSV и текстового PDF доступно. OCR: ${info.ocr ? 'доступен' : 'нужны Tesseract и Poppler'}. Языки: ${info.languages.join(', ') || 'не установлены'}.`;
+    }).catch(() => byId('read-capabilities').textContent = 'Не удалось проверить доступность движков.');
     // Restore at most the last job of each kind after a reload.
-    for (const kind of ['conversion', 'generation']) { const job = remembered.filter(x => x.kind === kind).at(-1); if (job) poll(job.id, kind); }
+    for (const kind of ['reading', 'generation', 'import']) { const job = remembered.filter(x => x.kind === kind).at(-1); if (job) poll(job.id, kind); }
     loadVolume().catch(e => byId('volume-summary').textContent = e.message);
-  } else byId('conversion-capabilities').textContent = 'Загрузка, конвертация, OCR и генерация доступны при запуске локального веб-приложения.';
+  } else byId('read-capabilities').textContent = 'Загрузка, проверка документов, OCR и генерация доступны при запуске локального веб-приложения.';
 })();

@@ -36,9 +36,8 @@ try
         var data = JsonSerializer.Deserialize<Dataset>(File.ReadAllText(Path.Combine(output, "dataset.json")), JsonFiles.Options)!;
         if (check)
         {
-            var (operations, plans, report) = DuplicateChecker.Analyze(output, data.Documents);
-            data.Operations = operations; data.Obligations = data.Obligations.Where(o => o.Kind == "document").Concat(plans).ToList();
-            FinanceCalculator.Calculate(data);
+            FinancialImport.Calculate(output, data);
+            var report = data.Duplicates;
             Console.WriteLine($"Проверено {report.Summary["files"]} файлов. Повторы: документов {report.Documents.Count}, банковских строк {report.Operations.Count}, плановых строк {report.Plans.Count}. Конфликтов нет.");
         }
         if (!check) generator.RenderViewer(output, data);
@@ -48,7 +47,7 @@ try
     if (open) Process.Start(new ProcessStartInfo(viewer) { UseShellExecute = true });
     return 0;
 }
-catch (Exception error) when (error is ArgumentException or IOException or InvalidOperationException or JsonException or FormatException or IndexOutOfRangeException)
+catch (Exception error) when (error is ArgumentException or InvalidDataException or IOException or InvalidOperationException or JsonException or FormatException or IndexOutOfRangeException)
 {
     Console.Error.WriteLine(error.Message); return 1;
 }

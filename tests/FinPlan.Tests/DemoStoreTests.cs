@@ -16,7 +16,13 @@ public sealed class DemoStoreTests(DemoFixture fixture) : IClassFixture<DemoFixt
     {
         var folder = Path.Combine(Path.GetTempPath(), "finplan-store-test-" + Guid.NewGuid()); Directory.CreateDirectory(folder);
         File.Copy(Path.Combine(fixture.Output, "dataset.json"), Path.Combine(folder, "dataset.json"));
+        CopyDocuments(folder);
         return folder;
+    }
+    private void CopyDocuments(string folder)
+    {
+        Directory.CreateDirectory(Path.Combine(folder, "documents"));
+        foreach (var file in Directory.GetFiles(Path.Combine(fixture.Output, "documents"))) File.Copy(file, Path.Combine(folder, "documents", Path.GetFileName(file)));
     }
     [Fact]
     public async Task SuccessfulReplacementDeletesPreviousDatasetAndSurvivesRestartWithoutRecreatingInitial()
@@ -52,6 +58,7 @@ public sealed class DemoStoreTests(DemoFixture fixture) : IClassFixture<DemoFixt
             {
                 var path = Path.Combine(folder, "generations", id); Directory.CreateDirectory(path);
                 File.Copy(Path.Combine(folder, "dataset.json"), Path.Combine(path, "dataset.json"));
+                CopyDocuments(path);
                 File.WriteAllText(Path.Combine(path, "owned.csv"), "a;b\n1;2");
             }
             var notes = Path.Combine(folder, "generations", "user-notes"); Directory.CreateDirectory(notes);
@@ -60,7 +67,11 @@ public sealed class DemoStoreTests(DemoFixture fixture) : IClassFixture<DemoFixt
             File.WriteAllText(Path.Combine(folder, "custom.txt"), "keep custom");
             var selectedId = Directory.Exists(Path.Combine(folder, "generations", selected.ToUpperInvariant())) ? selected.ToUpperInvariant() : selected;
             JsonFiles.Write(Path.Combine(folder, "current.json"), new { Id = selectedId });
+            var partialId=Guid.NewGuid().ToString("N");var partial=Path.Combine(folder,"generations",partialId);Directory.CreateDirectory(partial);
+            File.WriteAllText(Path.Combine(partial,"remaining.csv"),"previous deletion was interrupted");
+            var marker=Path.Combine(folder,"generations",".retired-"+partialId);File.WriteAllText(marker,"");
             var store = new DemoStore(Root(), folder);
+            Assert.False(Directory.Exists(partial));Assert.False(File.Exists(marker));
             Assert.Equal(Guid.Parse(selected), Guid.Parse(store.Current.Id));
             Assert.Equal(Guid.Parse(selected), Guid.Parse(store.Load(selected).Id));
             Assert.True(File.Exists(Path.Combine(store.Current.Directory, "owned.csv")));
@@ -80,7 +91,7 @@ public sealed class DemoStoreTests(DemoFixture fixture) : IClassFixture<DemoFixt
         {
             var store = new DemoStore(Root(), folder);
             // A directory at an owned file path produces a cleanup error on both Windows and macOS.
-            var obstacle = Path.Combine(folder, "calendar.csv"); Directory.CreateDirectory(obstacle);
+            var obstacle = Path.Combine(folder, "calendar.csv"); File.Delete(obstacle); Directory.CreateDirectory(obstacle);
             var next = await store.RegenerateAsync(919);
             Assert.Equal(next.Id, store.Current.Id);
             Assert.True(File.Exists(Path.Combine(next.Directory, "dataset.json")));

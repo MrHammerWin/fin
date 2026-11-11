@@ -34,7 +34,7 @@ public sealed class BulkVolumeTests : IClassFixture<DemoFixture>
                 var path = Path.Combine(snapshot.Directory, file.Path); using var stream = File.OpenRead(path);
                 Assert.Equal(file.Bytes, stream.Length); Assert.Equal(file.Sha256, Convert.ToHexStringLower(SHA256.HashData(stream)));
                 if (file.Kind == "control") continue;
-                var rows = ConversionContentReader.Read(path).Sections[0].Rows.Skip(1).ToList(); Assert.Equal(file.Rows, rows.Count);
+                var rows = DocumentContentReader.Read(path).Sections[0].Rows.Skip(1).ToList(); Assert.Equal(file.Rows, rows.Count);
                 foreach (var row in rows)
                     switch (file.Kind)
                     {
@@ -49,7 +49,7 @@ public sealed class BulkVolumeTests : IClassFixture<DemoFixture>
                     }
             }
             foreach (var file in manifest.Files.Where(f => f.Kind == "obligations"))
-                foreach (var row in ConversionContentReader.Read(Path.Combine(snapshot.Directory, file.Path)).Sections[0].Rows.Skip(1))
+                foreach (var row in DocumentContentReader.Read(Path.Combine(snapshot.Directory, file.Path)).Sections[0].Rows.Skip(1))
                 {
                     obligations++; var amount = decimal.Parse(row[11], CultureInfo.InvariantCulture); var payment = decimal.Parse(row[12], CultureInfo.InvariantCulture);
                     Assert.Equal(invoices[row[1]][10], row[11]); Assert.InRange(payment, 0, amount);

@@ -15,13 +15,14 @@ public sealed class VolumeSummary
     public int Files { get; set; }
     public string Manifest { get; set; } = "volume-manifest.json";
     public VolumeChange? LastChange { get; set; }
+    public bool MeasuredTarget { get; set; }
 }
 public sealed class VolumeManifest
 {
     public int Version { get; set; } = 1;
     public int Seed { get; set; }
     public long NextObligationId { get; set; }
-    public string Scope { get; set; } = "Связанный синтетический корпус для импорта и нагрузки. Календарь содержит отдельный контрольный набор из 100 документов; строки корпуса автоматически в него не импортируются.";
+    public string Scope { get; set; } = "Связанный синтетический корпус для импорта и нагрузки. Календарь содержит обработанные основные документы; строки большого корпуса автоматически в него не импортируются.";
     public VolumeSummary Summary { get; set; } = new();
     public List<VolumeFile> Files { get; set; } = [];
     public Dictionary<string, decimal> InvoiceTotals { get; set; } = [];
@@ -134,7 +135,7 @@ public static class BulkVolume
             if (partBytes > ToleranceBytes / 2) throw new InvalidDataException("Часть корпуса слишком велика для безопасного удаления с допуском 100 МБ.");
             var obligations = group.Single(f => f.Kind == "obligations");
             // A part has at most 20,000 obligations. Only the removed parts are read.
-            foreach (var row in ConversionContentReader.ReadCsv(Path.Combine(output, obligations.Path)).Skip(1))
+            foreach (var row in DocumentContentReader.ReadCsv(Path.Combine(output, obligations.Path)).Skip(1))
             {
                 cancellation.ThrowIfCancellationRequested();
                 var currency = row[8];
@@ -161,14 +162,16 @@ public static class BulkVolume
             JsonFiles.Write(Path.Combine(output, manifest.Summary.Manifest), manifest);
             JsonFiles.Write(Path.Combine(output, "dataset.json"), data); generator.RenderViewer(output, data);
             var total = BytesIn(output);
-            if (total == manifest.Summary.TotalBytes)
+            var targetChanged = manifest.Summary.MeasuredTarget && manifest.Summary.TargetBytes != total;
+            if (total == manifest.Summary.TotalBytes && !targetChanged)
             {
                 var difference = total - manifest.Summary.TargetBytes;
-                if (difference > ToleranceBytes || difference < (manifest.Summary.LastChange?.Operation == "remove" ? -ToleranceBytes : 0))
+                if (!manifest.Summary.MeasuredTarget && (difference > ToleranceBytes || difference < (manifest.Summary.LastChange?.Operation == "remove" ? -ToleranceBytes : 0)))
                     throw new InvalidDataException("Фактический объём вышел за допустимый диапазон относительно цели.");
                 return;
             }
             manifest.Summary.TotalBytes = total;
+            if (manifest.Summary.MeasuredTarget) manifest.Summary.TargetBytes = total;
         }
         throw new InvalidOperationException("Не удалось зафиксировать точный объём набора.");
     }

@@ -110,13 +110,13 @@ public sealed class DemoGenerator(string root)
         }
         foreach (var o in data.Obligations.Take(20))
         {
-            string[] lines = [data.Company, "СИНТЕТИЧЕСКИЙ ОБРАЗЕЦ • НЕ ДЛЯ ОПЛАТЫ", $"Контрагент: {o.Counterparty}", $"Регистрационный код: {o.CounterpartyId} (учебный)", $"Договор: {o.Contract} от 2026-10-01", $"Счёт на оплату: {o.Invoice} от 2026-10-02", $"Валютный счёт компании: {o.Account}", $"Направление: {(o.Direction == "out" ? "выплата" : "поступление")}", $"Сумма: {Number(o.Amount)} {o.Currency}", $"Оплатить не позднее: {Date(o.Due)}"];
+            string[] lines = [data.Company, "СИНТЕТИЧЕСКИЙ ОБРАЗЕЦ • НЕ ДЛЯ ОПЛАТЫ", $"Обязательство ID: {o.Id}", $"Ожидаемая дата: {Date(o.ScheduledDate)}", $"Контрагент: {o.Counterparty}", $"Регистрационный код: {o.CounterpartyId} (учебный)", $"Договор: {o.Contract} от 2026-10-01", $"Счёт на оплату: {o.Invoice} от 2026-10-02", $"Валютный счёт компании: {o.Account}", $"Направление: {(o.Direction == "out" ? "выплата" : "поступление")}", $"Сумма: {Number(o.Amount)} {o.Currency}", $"Оплатить не позднее: {Date(o.Due)}"];
             Docx(Register(o.Contract + ".docx", "contract", [o.Id], ["contract", o.CounterpartyId, o.Contract!, "2026-10-01"]), new[] { "ДОГОВОР ОКАЗАНИЯ УСЛУГ" }.Concat(lines).Concat(["1. Предмет: оказание услуг, потребляемых в текущем периоде.", "2. Цена фиксирована в указанной валюте, НДС не облагается (учебное допущение).", $"3. Срок оплаты — {o.Due.DayNumber - o.RecognizedDate!.Value.DayNumber} календарных дней после акта; частичная оплата допускается.", "4. Исполнение подтверждается актом, связанным с тем же счётом.", "Заказчик: __________________    Исполнитель: __________________"]));
-            Xlsx(Register(o.Invoice + ".xlsx", "invoice", [o.Id]), [["СЧЁТ НА ОПЛАТУ", o.Invoice!], ["Дата", "2026-10-02"], ["Компания", data.Company], ["Контрагент", o.Counterparty], ["Контрагент ID", o.CounterpartyId], ["Договор", o.Contract!], ["Валюта", o.Currency], ["Счёт компании", o.Account], ["Срок оплаты", Date(o.Due)], ["Направление", o.Direction], ["№", "Наименование", "Ед.", "Количество", "Цена", "Сумма"], ["1", "Оказанные и потреблённые услуги", "усл.", "1", Number(o.Amount), Number(o.Amount)], ["ИТОГО", Number(o.Amount)], ["НДС", "Без НДС, учебный образец"], ["Подпись", "________________"]]);
+            Xlsx(Register(o.Invoice + ".xlsx", "invoice", [o.Id]), [["СЧЁТ НА ОПЛАТУ", o.Invoice!], ["Дата", "2026-10-02"], ["Обязательство ID", o.Id], ["Ожидаемая дата", Date(o.ScheduledDate)], ["Компания", data.Company], ["Контрагент", o.Counterparty], ["Контрагент ID", o.CounterpartyId], ["Договор", o.Contract!], ["Валюта", o.Currency], ["Счёт компании", o.Account], ["Срок оплаты", Date(o.Due)], ["Направление", o.Direction], ["№", "Наименование", "Ед.", "Количество", "Цена", "Сумма"], ["1", "Оказанные и потреблённые услуги", "усл.", "1", Number(o.Amount), Number(o.Amount)], ["ИТОГО", Number(o.Amount)], ["НДС", "Без НДС, учебный образец"], ["Подпись", "________________"]]);
             Pdf(Register(o.Act + ".pdf", "act", [o.Id]), new[] { $"АКТ СДАЧИ-ПРИЁМКИ {o.Act} от {Date(o.RecognizedDate!.Value)}" }.Concat(lines).Concat([$"Статья ОПиУ: {FinanceCalculator.PnlCategories[o.PnlCategory!]}", "Услуги оказаны и потреблены в дату акта.", "Позиция 1. Оказанные и потреблённые услуги — 1 усл.", $"Итого: {Number(o.Amount)} {o.Currency}. Без НДС.", "Работы выполнены. Претензий по объёму нет.", "Акт подтверждает исполнение; не создаёт дополнительный платёж.", "Сдал: __________________       Принял: __________________"]));
         }
         foreach (var o in data.Obligations.Take(4))
-            Pdf(Register(o.Contract + ".pdf", "contract_alternative", [o.Id], ["contract", o.CounterpartyId, o.Contract!, "2026-10-01"]), ["ДОГОВОР — альтернативное представление", data.Company, $"Договор: {o.Contract} от 2026-10-01", $"Контрагент: {o.Counterparty}", $"Контрагент ID: {o.CounterpartyId}", $"Сумма: {Number(o.Amount)} {o.Currency}", $"Оплатить не позднее: {Date(o.Due)}", $"Направление: {o.Direction}", "СИНТЕТИЧЕСКИЙ ОБРАЗЕЦ", "Тот же договор, что в DOCX. Не новое обязательство."]);
+            Pdf(Register(o.Contract + ".pdf", "contract_alternative", [o.Id], ["contract", o.CounterpartyId, o.Contract!, "2026-10-01"]), ["ДОГОВОР — альтернативное представление", data.Company, $"Договор: {o.Contract} от 2026-10-01", $"Обязательство ID: {o.Id}", $"Ожидаемая дата: {Date(o.ScheduledDate)}", $"Контрагент: {o.Counterparty}", $"Контрагент ID: {o.CounterpartyId}", $"Сумма: {Number(o.Amount)} {o.Currency}", $"Оплатить не позднее: {Date(o.Due)}", $"Направление: {o.Direction}", "СИНТЕТИЧЕСКИЙ ОБРАЗЕЦ", "Тот же договор, что в DOCX. Не новое обязательство."]);
         (int First, int Last)[] periods = [(1, 3), (4, 7), (8, 10), (11, 14)];
         foreach (var c in data.Rates.Keys)
         for (var pi = 0; pi < 4; pi++)
@@ -145,11 +145,12 @@ public sealed class DemoGenerator(string root)
             var source = data.Documents.First(d => d.Path == "documents/" + original);
             File.Copy(Path.Combine(docs, original), Register(copy, source.Type, source.Obligations, source.DocumentKey));
         }
-        var (operations, plans, report) = DuplicateChecker.Analyze(output, data.Documents);
-        foreach (var o in plans) o.Sources = data.Documents.Where(d => d.Obligations.Contains(o.Id)).Select(d => d.Path).ToList();
-        data.Obligations = data.Obligations.Take(20).Concat(plans).ToList(); data.Operations = operations; data.Duplicates = report;
-        FinanceCalculator.Calculate(data);
-        JsonFiles.Write(Path.Combine(output, "dataset.json"), data); JsonFiles.Write(Path.Combine(output, "duplicates.json"), report); JsonFiles.Write(Path.Combine(output, "reports.json"), data.Reports);
+        FinancialImport.Calculate(output, data);
+        return Save(output, data);
+    }
+    public Dataset Save(string output, Dataset data)
+    {
+        JsonFiles.Write(Path.Combine(output, "dataset.json"), data); JsonFiles.Write(Path.Combine(output, "duplicates.json"), data.Duplicates); JsonFiles.Write(Path.Combine(output, "reports.json"), data.Reports);
         List<string[]> calendar = [["Дата", "Валюта", "На начало", "Поступления", "Выплаты", "На конец"]];
         foreach (var day in data.Calendar) foreach (var (c, v) in day.Currencies) calendar.Add([Date(day.Date), c, Number(v.Opening), Number(v.In), Number(v.Out), Number(v.Closing)]);
         Csv(Path.Combine(output, "calendar.csv"), calendar);
@@ -162,6 +163,6 @@ public sealed class DemoGenerator(string root)
     {
         var template = File.ReadAllText(Path.Combine(root, "demo", "viewer.html"));
         var json = JsonSerializer.Serialize(data, JsonFiles.Options).Replace("<", "\\u003c");
-        return template.Replace("__DATA__", json).Replace("__FINANCE__", File.ReadAllText(Path.Combine(root, "demo", "finance.js"))).Replace("__DOCUMENT_TOOLS__", File.ReadAllText(Path.Combine(root, "demo", "document-tools.js")));
+        return template.Replace("__FINANCE__", File.ReadAllText(Path.Combine(root, "demo", "finance.js"))).Replace("__DOCUMENT_TOOLS__", File.ReadAllText(Path.Combine(root, "demo", "document-tools.js"))).Replace("__DATA__", json);
     }
 }

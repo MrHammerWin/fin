@@ -7,20 +7,10 @@ using System.Xml.Linq;
 namespace FinPlan;
 
 public sealed record ContentSection(string Name, List<string[]> Rows);
-public sealed record ConversionContent(List<ContentSection> Sections, List<string> Warnings)
-{
-    public IEnumerable<string[]> FlatRows()
-    {
-        foreach (var section in Sections)
-        {
-            if (Sections.Count > 1) yield return ["Раздел", section.Name];
-            foreach (var row in section.Rows) yield return row;
-        }
-    }
-}
+public sealed record DocumentContent(List<ContentSection> Sections, List<string> Warnings);
 
 /// <summary>Reads actual source content. It never consults the synthetic dataset.</summary>
-public static class ConversionContentReader
+public static class DocumentContentReader
 {
     private static readonly XNamespace W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
     private static readonly XNamespace S = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
@@ -67,12 +57,12 @@ public static class ConversionContentReader
         return XDocument.Load(reader);
     }
 
-    public static ConversionContent Read(string path)
+    public static DocumentContent Read(string path)
     {
         Validate(path);
         var content = Format(path) switch
         {
-            "csv" => new ConversionContent([new("Данные", ReadCsv(path))], []),
+            "csv" => new DocumentContent([new("Данные", ReadCsv(path))], []),
             "docx" => ReadDocx(path),
             "xlsx" => ReadXlsx(path),
             _ => throw new InvalidDataException("PDF обрабатывается модулем извлечения текста и OCR.")
@@ -129,7 +119,7 @@ public static class ConversionContentReader
     }
 
     private static string WordText(XElement element) => string.Concat(element.Descendants().Select(e => e.Name == W + "t" ? e.Value : e.Name == W + "tab" ? "\t" : e.Name == W + "br" ? "\n" : ""));
-    private static ConversionContent ReadDocx(string path)
+    private static DocumentContent ReadDocx(string path)
     {
         using var zip = ZipFile.OpenRead(path);
         var sections = new List<ContentSection>();
@@ -145,10 +135,10 @@ public static class ConversionContentReader
             }
             sections.Add(new(part == "word/document.xml" ? "Документ" : Path.GetFileNameWithoutExtension(part), rows));
         }
-        return new(sections, ["Сохраняются текст и ячейки таблиц. Оформление, изображения, объединение ячеек и интерактивные поля DOCX в табличном представлении теряются."]);
+        return new(sections, []);
     }
 
-    private static ConversionContent ReadXlsx(string path)
+    private static DocumentContent ReadXlsx(string path)
     {
         using var zip = ZipFile.OpenRead(path);
         var workbook = Xml(zip, "xl/workbook.xml");
@@ -189,8 +179,8 @@ public static class ConversionContentReader
                     };
                     if (cell.Element(S + "f") is not null)
                     {
-                        if (raw == "") throw new InvalidDataException("У формулы XLSX нет сохранённого результата. Пересчитайте и сохраните книгу в Excel или LibreOffice.");
-                        warnings.Add("Формулы заменены сохранёнными результатами; актуальность кэша зависит от последнего сохранения исходной книги.");
+                        if (raw == "") throw new InvalidDataException("У формулы XLSX нет сохранённого результата. Пересчитайте и сохраните книгу в Excel или совместимом офисном приложении.");
+                        warnings.Add("Прочитаны сохранённые результаты формул; их актуальность зависит от последнего сохранения книги.");
                     }
                     var style = (int?)cell.Attribute("s") ?? 0;
                     var numberFormat = style < dateStyles.Length ? dateStyles[style] : 0;
@@ -203,48 +193,11 @@ public static class ConversionContentReader
             }
             sections.Add(new((string?)sheet.Attribute("name") ?? "Лист", rows));
         }
-        warnings.Add("Сохраняются все листы и значения ячеек. Оформление, диаграммы, изображения и объединения ячеек при преобразовании в другой тип документа теряются.");
         return new(sections, warnings.Distinct().ToList());
     }
     private static bool IsDateFormat(string format)
     {
         var stripped = System.Text.RegularExpressions.Regex.Replace(format, "\"[^\"]*\"|\\\\.|\\[[^\\]]*\\]", "").ToLowerInvariant();
         return stripped.Contains('y') || stripped.Contains('d') || stripped.Contains('h') || stripped.Contains('s');
-    }
-}
-
-public static class ConversionContentWriter
-{
-    private static readonly XNamespace W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
-    public static void Docx(string path, ConversionContent content)
-    {
-        using var zip = ZipFile.Open(path, ZipArchiveMode.Create);
-        foreach (var part in OpenXmlTemplates.Docx) Write(part.Key, part.Value);
-        var body = new XElement(W + "body");
-        foreach (var section in content.Sections)
-        {
-            if (content.Sections.Count > 1) body.Add(Paragraph(section.Name));
-            foreach (var row in section.Rows)
-                if (row.Length <= 1) body.Add(Paragraph(row.FirstOrDefault() ?? ""));
-                else body.Add(new XElement(W + "tbl", new XElement(W + "tblPr", new XElement(W + "tblW", new XAttribute(W + "w", 9000), new XAttribute(W + "type", "dxa"))),
-                    new XElement(W + "tblGrid", row.Select(_ => new XElement(W + "gridCol", new XAttribute(W + "w", 9000 / row.Length)))),
-                    new XElement(W + "tr", row.Select(value => new XElement(W + "tc", new XElement(W + "tcPr", new XElement(W + "tcW", new XAttribute(W + "w", 9000 / row.Length), new XAttribute(W + "type", "dxa"))), Paragraph(value))))));
-        }
-        body.Add(new XElement(W + "sectPr", new XElement(W + "pgSz", new XAttribute(W + "w", 11906), new XAttribute(W + "h", 16838)),
-            new XElement(W + "pgMar", new XAttribute(W + "top", 1000), new XAttribute(W + "bottom", 1000), new XAttribute(W + "left", 1000), new XAttribute(W + "right", 1000))));
-        Write("word/document.xml", new XElement(W + "document", body).ToString());
-        void Write(string name, string text) { using var writer = new StreamWriter(zip.CreateEntry(name).Open(), new UTF8Encoding(false)); writer.Write(text); }
-    }
-    private static XElement Paragraph(string text) => new(W + "p", text.Split('\n').SelectMany((line, index) =>
-        (index == 0 ? Array.Empty<XElement>() : [new XElement(W + "r", new XElement(W + "br"))]).Append(new XElement(W + "r", new XElement(W + "t", new XAttribute(XNamespace.Xml + "space", "preserve"), line)))));
-
-    public static void Xlsx(string path, ConversionContent content)
-    {
-        // One explicit section column keeps every source sheet, including names, in a loss-aware single-sheet export.
-        var rows = content.FlatRows().Select(row => row.Length == 0 ? [""] : row).ToList();
-        if (rows.Count == 0) rows.Add([""]);
-        if (rows.Count > 1_048_576 || rows.Any(r => r.Length > 16384 || r.Any(c => c.Length > 32767)))
-            throw new InvalidDataException("Содержимое превышает ограничение Excel на строки, колонки или длину ячейки.");
-        DocumentFiles.Xlsx(path, rows);
     }
 }

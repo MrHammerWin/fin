@@ -28,6 +28,8 @@ public sealed class DemoStore
         if (!File.Exists(Path.Combine(this.output, "current.json")) && !File.Exists(Path.Combine(this.output, "dataset.json"))) this.generate(this.output, 42);
         var currentDirectory = ResolveCurrentDirectory(this.output);
         current = ReadSnapshot(currentDirectory == this.output ? "initial" : Path.GetFileName(currentDirectory));
+        FinancialImport.Calculate(current.Directory, current.Data);
+        generator.Save(current.Directory, current.Data);
         if (current.Data.Volume is not null)
         {
             var manifest = JsonSerializer.Deserialize<VolumeManifest>(File.ReadAllText(Path.Combine(current.Directory, "volume-manifest.json")), JsonFiles.Options)
@@ -112,7 +114,8 @@ public sealed class DemoStore
                         : BulkVolume.Append(directory, manifest, target, Report, cancellation);
                 }
                 else BulkVolume.RemoveSuffix(directory, manifest!, bytes, progress, cancellation);
-                manifest!.Summary.TargetBytes = target;
+                manifest!.Summary.MeasuredTarget = false;
+                manifest.Summary.TargetBytes = target;
                 manifest.Summary.LastChange = new(operation, bytes, before);
                 BulkVolume.Finalize(directory, data, manifest, generator);
                 var actual = data.Volume!.TotalBytes;
@@ -125,6 +128,62 @@ public sealed class DemoStore
             File.Move(pointerTemp, Path.Combine(output, "current.json"), true);
             Volatile.Write(ref current, next); published = true;
             CleanupWarning = RemovePreviousDatasets();
+            return next;
+        }
+        catch
+        {
+            if (!published && System.IO.Directory.Exists(directory)) System.IO.Directory.Delete(directory, true);
+            if (File.Exists(pointerTemp)) File.Delete(pointerTemp);
+            throw;
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<DemoSnapshot> ImportAsync(ImportPreview preview, string inputs, Action<GenerationProgress>? progress = null, CancellationToken cancellation = default)
+    {
+        if (!await gate.WaitAsync(0)) throw new GenerationBusyException();
+        var directory = Path.Combine(output, "generations", Guid.NewGuid().ToString("N"));
+        var pointerTemp = Path.Combine(output, ".current-" + Guid.NewGuid().ToString("N") + ".tmp");
+        var published = false;
+        try
+        {
+            if (preview.Files.Any(f => !f.Document.CanApply)) throw new InvalidDataException("Неоднозначные результаты OCR нельзя применять.");
+            if (preview.DatasetId != Current.Id || preview.Fingerprint != FinancialImport.Fingerprint(Current)) throw new InvalidOperationException("Набор или его исходные файлы изменились. Прочитайте документы заново перед подтверждением.");
+            var previous = Load(preview.DatasetId);
+            await Task.Run(() => DatasetFiles.CopySnapshot(previous.Directory, directory, 20_000_000, cancellation), cancellation);
+            var data = ReadSnapshot(Path.GetFileName(directory)).Data;
+            var removed = preview.Files.SelectMany(f => f.Replaces).ToHashSet(StringComparer.Ordinal);
+            if (removed.Any(path => !data.Documents.Any(d => d.Path == path))) throw new InvalidDataException("Некорректная замена исходного документа.");
+            var bindings = data.Documents.Where(d => removed.Contains(d.Path)).ToDictionary(d => d.Path, d => d.Obligations);
+            foreach (var path in removed) File.Delete(Path.Combine(directory, path));
+            data.Documents.RemoveAll(d => removed.Contains(d.Path));
+            for (var i = 0; i < preview.Files.Count; i++)
+            {
+                cancellation.ThrowIfCancellationRequested();
+                var file = preview.Files[i]; var input = Path.Combine(inputs, $"input-{i:000}.{file.Document.Format}");
+                if (FinancialImport.Hash(input) != file.Sha256) throw new InvalidDataException("Загруженный оригинал изменился после проверки. Прочитайте его заново.");
+                if (!file.TargetPath.StartsWith("documents/", StringComparison.Ordinal) || file.TargetPath[10..] != Path.GetFileName(file.TargetPath)) throw new InvalidDataException("Некорректный путь документа.");
+                File.Copy(input, Path.Combine(directory, file.TargetPath), false);
+                if (FinancialImport.Hash(Path.Combine(directory, file.TargetPath)) != file.Sha256) throw new InvalidDataException("Оригинал изменился во время копирования. Прочитайте документ заново.");
+                data.Documents.Add(new() { Path = file.TargetPath, Type = file.Document.Type, Sha256 = file.Sha256, Extraction = file.Document, Obligations = file.Replaces.SelectMany(p => bindings[p]).Distinct().ToList() });
+                progress?.Invoke(new(i + 1, preview.Files.Count, 0, "Проверяем связи и пересчитываем финансовые данные"));
+            }
+            await Task.Run(() => FinancialImport.Calculate(directory, data), cancellation);
+            generator.Save(directory, data);
+            if (data.Volume is not null)
+            {
+                var manifest = DocumentApi.ReadVolume(new("", directory, data))!;
+                manifest.Files.RemoveAll(f => f.Kind == "control");
+                manifest.Files.InsertRange(0, data.Documents.Select(d => new VolumeFile(d.Path, "control", new FileInfo(Path.Combine(directory, d.Path)).Length, 0, d.Sha256)));
+                manifest.Summary.Files = manifest.Files.Count; manifest.Summary.DocumentBytes = manifest.Files.Sum(f => f.Bytes);
+                manifest.Summary.LastChange = null; manifest.Summary.MeasuredTarget = true;
+                BulkVolume.Finalize(directory, data, manifest, generator);
+            }
+            cancellation.ThrowIfCancellationRequested();
+            if (FinancialImport.Fingerprint(previous) != preview.Fingerprint) throw new InvalidOperationException("Исходные файлы текущего набора изменились во время обработки. Повторите чтение.");
+            var next = new DemoSnapshot(Path.GetFileName(directory), directory, data);
+            JsonFiles.Write(pointerTemp, new CurrentReference(next.Id)); File.Move(pointerTemp, Path.Combine(output, "current.json"), true);
+            Volatile.Write(ref current, next); published = true; CleanupWarning = RemovePreviousDatasets();
             return next;
         }
         catch
@@ -184,8 +243,14 @@ public sealed class DemoStore
             foreach (var path in System.IO.Directory.EnumerateDirectories(generations))
             {
                 var id = Path.GetFileName(path);
-                if (!string.Equals(id, Current.Id, StringComparison.OrdinalIgnoreCase) && Guid.TryParseExact(id, "N", out _) && File.Exists(Path.Combine(path, "dataset.json")))
-                    Remove(() => RemoveDirectory(path));
+                var retired = Path.Combine(generations, ".retired-" + id);
+                if (!string.Equals(id, Current.Id, StringComparison.OrdinalIgnoreCase) && Guid.TryParseExact(id, "N", out _) && (File.Exists(Path.Combine(path, "dataset.json")) || File.Exists(retired)))
+                    Remove(() =>
+                    {
+                        // Keep ownership outside the directory: a partial Windows deletion may remove dataset.json before hitting a locked file.
+                        if (!File.Exists(retired)) File.WriteAllText(retired, "");
+                        RemoveDirectory(path); File.Delete(retired);
+                    });
             }
         });
         if (Current.Id != "initial")

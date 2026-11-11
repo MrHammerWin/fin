@@ -10,45 +10,48 @@ using Xunit;
 
 namespace FinPlan.Tests;
 
-public sealed class DocumentApiTests(ConversionFixture fixture) : IClassFixture<ConversionFixture>
+public sealed class DocumentApiTests(ReaderFixture fixture) : IClassFixture<ReaderFixture>
 {
     [Fact]
-    public async Task UploadAndGeneratedDocumentsUseBackgroundJobsWithPrivateOriginals()
+    public async Task UploadedTemplateIsPreviewedThenAddedToRealCalendarOnlyAfterConfirmation()
     {
-        var output = fixture.NewDirectory();
-        await using var app = DemoHost.Create(fixture.Root, output); await app.StartAsync();
+        var output = fixture.NewDirectory(); await using var app = DemoHost.Create(fixture.Root, output); await app.StartAsync();
         try
         {
             var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
             using var client = new HttpClient { BaseAddress = new Uri(address) };
-            var html = await client.GetStringAsync("/");
-            var token = Regex.Match(html, "\"token\":\"([A-F0-9]+)\"").Groups[1].Value;
-            Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsync("/api/conversions", null)).StatusCode);
+            var token = Regex.Match(await client.GetStringAsync("/"), "\"token\":\"([A-F0-9]+)\"").Groups[1].Value;
+            Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsync("/api/jobs/read", null)).StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, (await client.PostAsync("/api/conversions", null)).StatusCode);
             client.DefaultRequestHeaders.Add("X-FinPlan-Token", token);
-            using var form = new MultipartFormDataContent();
-            var original = Encoding.UTF8.GetBytes("Code;Amount\r\nUPLOADPROBE85;1234.56\r\n");
-            form.Add(new ByteArrayContent(original), "file", "user-data.csv"); form.Add(new StringContent("xlsx"), "target");
-            using var response = await client.PostAsync("/api/conversions", form); Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
-            var accepted = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
-            var id = accepted.GetProperty("id").GetString()!; var completed = await Wait(client, id);
-            Assert.Equal("succeeded", completed.GetProperty("state").GetString());
-            Assert.Equal(JsonValueKind.Null, completed.GetProperty("result").GetProperty("file_path").ValueKind);
-            Assert.Equal(original, File.ReadAllBytes(Path.Combine(output, ".jobs", id, "original.csv")));
-            using var result = await client.GetAsync(completed.GetProperty("result").GetProperty("url").GetString());
-            Assert.Equal("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", result.Content.Headers.ContentType!.MediaType);
-            Assert.NotNull(result.Content.Headers.ContentDisposition);
-            var converted = Path.Combine(output, "download.xlsx"); await File.WriteAllBytesAsync(converted, await result.Content.ReadAsByteArrayAsync());
-            Assert.Contains("UPLOADPROBE85", ConversionContentReader.Read(converted).Sections[0].Rows.SelectMany(r => r));
-            Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/datasets/initial/.jobs/{id}/original.csv")).StatusCode);
-
-            using var generated = new MultipartFormDataContent();
-            generated.Add(new StringContent("initial"), "datasetId"); generated.Add(new StringContent("documents/D-001.docx"), "source"); generated.Add(new StringContent("csv"), "target");
-            using var acceptedGenerated = await client.PostAsync("/api/conversions", generated);
-            Assert.Equal(HttpStatusCode.Accepted, acceptedGenerated.StatusCode);
-            var generatedId = JsonDocument.Parse(await acceptedGenerated.Content.ReadAsStringAsync()).RootElement.GetProperty("id").GetString()!;
-            var generatedResult = await Wait(client, generatedId); Assert.Equal("succeeded", generatedResult.GetProperty("state").GetString());
-            var csv = await client.GetStringAsync(generatedResult.GetProperty("result").GetProperty("url").GetString());
-            Assert.Contains("ДОГОВОР ОКАЗАНИЯ УСЛУГ", csv); Assert.Contains("4. Исполнение подтверждается", csv);
+            var initial = JsonSerializer.Deserialize<Dataset>(File.ReadAllText(Path.Combine(output, "dataset.json")), JsonFiles.Options)!;
+            List<string[]> rows = [DuplicateChecker.PlanHeader];
+            for (var i = 0; i < 20; i++) rows.Add([$"P-UP-{i:000}", "CP-001", initial.Counterparties.Single(c=>c.Id=="CP-001").Name, "A-RUB", "RUB", "out", "9876.54", "2026-11-20", "2026-11-20", "USER FILE PURPOSE __FINANCE__ __DOCUMENT_TOOLS__"]);
+            var source = Path.Combine(output, "user-plan.csv"); DocumentFiles.Csv(source, rows); var original = File.ReadAllBytes(source);
+            using var form = new MultipartFormDataContent(); form.Add(new StringContent("initial"),"datasetId");form.Add(new ByteArrayContent(original),"files","user-plan.csv");
+            using var response=await client.PostAsync("/api/jobs/read",form);Assert.Equal(HttpStatusCode.Accepted,response.StatusCode);
+            var id=JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("id").GetString()!;
+            var completed=await Wait(client,id);Assert.Equal("succeeded",completed.GetProperty("state").GetString());
+            var preview=completed.GetProperty("result").GetProperty("preview");Assert.Equal("plan",preview.GetProperty("files")[0].GetProperty("document").GetProperty("type").GetString());
+            Assert.Equal(original,File.ReadAllBytes(Path.Combine(output,".jobs",id,"input-000.csv")));
+            Assert.Equal("initial",JsonDocument.Parse(await client.GetStringAsync("/api/status")).RootElement.GetProperty("id").GetString());
+            using var denied=await client.PostAsync($"/api/jobs/{id}/apply",new StringContent("{\"confirmed\":false}",Encoding.UTF8,"application/json"));Assert.Equal(HttpStatusCode.BadRequest,denied.StatusCode);
+            using var apply=await client.PostAsync($"/api/jobs/{id}/apply",new StringContent("{\"confirmed\":true}",Encoding.UTF8,"application/json"));Assert.Equal(HttpStatusCode.Accepted,apply.StatusCode);
+            var applyId=JsonDocument.Parse(await apply.Content.ReadAsStringAsync()).RootElement.GetProperty("id").GetString()!;
+            var applied=await Wait(client,applyId);Assert.Equal("succeeded",applied.GetProperty("state").GetString());
+            var datasetId=applied.GetProperty("result").GetProperty("url").GetString()!.Split('/')[2];
+            var data=JsonSerializer.Deserialize<Dataset>(await client.GetStringAsync($"/datasets/{datasetId}/dataset.json"),JsonFiles.Options)!;
+            Assert.Equal(440,data.Obligations.Count);Assert.Equal(101,data.Documents.Count);
+            var generatedHtml=await client.GetStringAsync($"/datasets/{datasetId}/calendar_view.html");
+            var embedded=Regex.Match(generatedHtml,"<script id=\"dataset\"[^>]*>([\\s\\S]*?)</script>").Groups[1].Value;
+            using var safeJson=JsonDocument.Parse(embedded);
+            Assert.Contains("__FINANCE__",safeJson.RootElement.GetProperty("obligations").EnumerateArray().Single(o=>o.GetProperty("id").GetString()=="P-UP-000").GetProperty("purpose").GetString());
+            Assert.All(data.Obligations.Where(o=>o.Id.StartsWith("P-UP-",StringComparison.Ordinal)),o=>Assert.Equal(9876.54m,o.Amount));
+            Assert.Equal(initial.Reports!.Currencies["TOTAL"]["operating_profit"],data.Reports!.Currencies["TOTAL"]["operating_profit"]);
+            Assert.NotEqual(JsonSerializer.Serialize(initial.Calendar,JsonFiles.Options),JsonSerializer.Serialize(data.Calendar,JsonFiles.Options));
+            Assert.Single(Directory.GetDirectories(Path.Combine(output,"generations")));
+            Assert.Equal(HttpStatusCode.NotFound,(await client.GetAsync($"/datasets/{datasetId}/.jobs/{id}/input-000.csv")).StatusCode);
+            using var stale=await client.PostAsync($"/api/jobs/{id}/apply",new StringContent("{\"confirmed\":true}",Encoding.UTF8,"application/json"));Assert.Equal(HttpStatusCode.Conflict,stale.StatusCode);
         }
         finally { await app.StopAsync(); }
     }
@@ -66,10 +69,10 @@ public sealed class DocumentApiTests(ConversionFixture fixture) : IClassFixture<
             var initialBytes = BulkVolume.BytesIn(output);
             var initialSize = JsonDocument.Parse(await client.GetStringAsync("/api/datasets/initial/size")).RootElement;
             Assert.Equal(initialBytes, initialSize.GetProperty("total_bytes").GetInt64());
-            using var bad = new MultipartFormDataContent(); bad.Add(new StringContent("not-pdf"), "file", "fake.pdf"); bad.Add(new StringContent("docx"), "target");
-            Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsync("/api/conversions", bad)).StatusCode);
-            using var traversal = new MultipartFormDataContent(); traversal.Add(new StringContent("initial"), "datasetId"); traversal.Add(new StringContent("../dataset.json"), "source"); traversal.Add(new StringContent("pdf"), "target");
-            Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsync("/api/conversions", traversal)).StatusCode);
+            using var bad=new MultipartFormDataContent();bad.Add(new StringContent("initial"),"datasetId");bad.Add(new StringContent("not-pdf"),"files","fake.pdf");
+            Assert.Equal(HttpStatusCode.BadRequest,(await client.PostAsync("/api/jobs/read",bad)).StatusCode);
+            using var traversal=new MultipartFormDataContent();traversal.Add(new StringContent("initial"),"datasetId");traversal.Add(new StringContent("../dataset.json"),"source");
+            Assert.Equal(HttpStatusCode.BadRequest,(await client.PostAsync("/api/jobs/read",traversal)).StatusCode);
             using var request = new StringContent("{\"targetBytes\":25000000}", Encoding.UTF8, "application/json");
             using var response = await client.PostAsync("/api/jobs/generate", request); Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
             var id = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("id").GetString()!;

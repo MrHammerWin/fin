@@ -38,7 +38,7 @@ public sealed class DatasetResizeTests : IClassFixture<DemoFixture>
             Assert.Equal(file.Bytes, new FileInfo(path).Length);
             Assert.Equal(file.Sha256, Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(path))));
             if (file.Kind == "control") continue;
-            var rows = ConversionContentReader.ReadCsv(path).Skip(1).ToList(); Assert.Equal(file.Rows, rows.Count);
+            var rows = DocumentContentReader.ReadCsv(path).Skip(1).ToList(); Assert.Equal(file.Rows, rows.Count);
             foreach (var row in rows)
                 switch (file.Kind)
                 {
@@ -106,7 +106,7 @@ public sealed class DatasetResizeTests : IClassFixture<DemoFixture>
             var keptHashes = Hashes(removed);
             var added = await store.ResizeAsync(removed.Id, "add", 1_000_000); Verify(added); Preserved(keptHashes, added);
             foreach (var file in DocumentApi.ReadVolume(added)!.Files.Where(f => f.Kind == "obligations" && !kept.Files.Any(k => k.Path == f.Path)))
-                foreach (var row in ConversionContentReader.ReadCsv(Path.Combine(added.Directory, file.Path)).Skip(1))
+                foreach (var row in DocumentContentReader.ReadCsv(Path.Combine(added.Directory, file.Path)).Skip(1))
                     Assert.True(long.Parse(row[0][3..], CultureInfo.InvariantCulture) >= oldNextId);
             var restarted = new DemoStore(root, output); Assert.Equal(added.Id, restarted.Current.Id); Verify(restarted.Current);
         }
