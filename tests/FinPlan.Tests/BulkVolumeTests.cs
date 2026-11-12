@@ -42,7 +42,12 @@ public sealed class BulkVolumeTests : IClassFixture<DemoFixture>
                         case "invoices":
                             Assert.True(invoices.TryAdd(row[0], row)); Assert.True(contracts.ContainsKey(row[2])); Assert.Equal(contracts[row[2]][2], row[4]);
                             totals[row[5]] = totals.GetValueOrDefault(row[5]) + decimal.Parse(row[10], CultureInfo.InvariantCulture); break;
-                        case "acts": Assert.True(invoices.ContainsKey(row[2])); Assert.Equal(invoices[row[2]][10], row[11]); break;
+                        case "acts":
+                            Assert.True(invoices.ContainsKey(row[2])); Assert.Equal(invoices[row[2]][10], row[11]);
+                            var recognized = DateOnly.Parse(row[8], CultureInfo.InvariantCulture);
+                            Assert.Equal(recognized.AddDays(int.Parse(contracts[row[4]][6], CultureInfo.InvariantCulture)), DateOnly.Parse(invoices[row[2]][9], CultureInfo.InvariantCulture));
+                            Assert.True(DateOnly.Parse(invoices[row[2]][8], CultureInfo.InvariantCulture) <= recognized);
+                            break;
                         case "bank":
                             var amount = decimal.Parse(row[6], CultureInfo.InvariantCulture); paid[row[7]] = paid.GetValueOrDefault(row[7]) + amount;
                             paymentTotals[row[3]] = paymentTotals.GetValueOrDefault(row[3]) + amount; break;

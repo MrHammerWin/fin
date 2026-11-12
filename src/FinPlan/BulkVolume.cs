@@ -76,6 +76,29 @@ public static class BulkVolume
         }
         bool Balanced() => formatCounts.Values.Distinct().Count() == 1;
         string[] currencies = ["RUB", "CHF", "GBP"];
+        int[] termOptions = [0, 3, 7, 14, 21, 30];
+        var rates = new Dataset().Rates.ToDictionary(kv => kv.Key, kv => decimal.Parse(kv.Value, CultureInfo.InvariantCulture));
+        ulong Draw(long value, ulong stream) => Mix((ulong)value ^ ((ulong)unchecked((uint)seed) << 32) ^ (stream * 0x9e3779b97f4a7c15UL));
+        var opening = new DateOnly(2026, 10, 1); var lastDay = new DateOnly(2026, 12, 30).DayNumber - opening.DayNumber;
+        // Shared daily peaks survive aggregation of millions of individually random records.
+        var profiles = Enumerable.Range(0, 6).Select(profile =>
+        {
+            var cumulative = new int[lastDay + 1]; var sum = 0;
+            for (var day = 0; day <= lastDay; day++)
+            {
+                var draw = Draw(day, (ulong)(64 + profile)); var tier = draw % 100;
+                sum += tier < 55 ? 1 : tier < 85 ? 4 + (int)((draw >> 8) % 9) : tier < 97 ? 20 + (int)((draw >> 8) % 51) : 140 + (int)((draw >> 8) % 181);
+                cumulative[day] = sum;
+            }
+            return cumulative;
+        }).ToArray();
+        DateOnly PickDate(int profile, int first, int last, ulong draw)
+        {
+            var cumulative = profiles[profile]; var before = first == 0 ? 0 : cumulative[first - 1];
+            var target = before + 1 + (int)(draw % (ulong)(cumulative[last] - before));
+            var day = Array.BinarySearch(cumulative, target);
+            return opening.AddDays(day < 0 ? ~day : day);
+        }
         while (total < targetBytes || !Balanced())
         {
             cancellation.ThrowIfCancellationRequested();
@@ -90,31 +113,41 @@ public static class BulkVolume
             for (var i = 0; i < count; i++, id++)
             {
                 if (i % 1000 == 0) cancellation.ThrowIfCancellationRequested();
-                var group = (id - 1) / 25; var cp = $"BCP-{group % 1000:0000}"; var currency = currencies[group % 3]; var account = "A-" + currency;
-                var direction = group % 2 == 0 ? "out" : "in";
+                var group = (id - 1) / 25; var cp = $"BCP-{Draw(group, 2) % 1000:0000}"; var ci = (int)(Draw(group, 0) % 3); var currency = currencies[ci]; var account = "A-" + currency;
+                var direction = Draw(group, 1) % 100 < 48 ? "in" : "out"; var profile = ci * 2 + (direction == "in" ? 0 : 1);
                 var contract = $"BC-{group:000000000}"; var contractEid = $"CON-{seed}-{group:000000000}";
                 var invoice = $"BI-{id:000000000}"; var invoiceEid = $"INV-{seed}-{id:000000000}";
                 var act = $"BA-{id:000000000}"; var actEid = $"ACT-{seed}-{id:000000000}"; var obligation = $"BO-{id:000000000}";
-                var recognized = new DateOnly(2026, 10, 1).AddDays((int)(id % 74) + 1);
-                var due = recognized.AddDays(7); var expected = due < new DateOnly(2026, 10, 15) ? new DateOnly(2026, 10, 15) : due;
-                var cents = 1000L + (long)(Mix((ulong)id ^ unchecked((uint)seed)) % 800_000_000UL);
-                var paidCents = (id % 4) switch { 0 => 0, 1 => cents, 2 => cents / 4, _ => cents * 3 / 4 };
+                var terms = termOptions[Draw(group, 3) % (ulong)termOptions.Length];
+                var expected = PickDate(profile, terms + 1, lastDay, Draw(id, 4)); var expectedDay = expected.DayNumber - opening.DayNumber;
+                var delayRoll = Draw(id, 5) % 100; var delay = delayRoll < 55 ? 0 : delayRoll < 75 ? 3 : delayRoll < 90 ? 7 : 14;
+                if (delay > expectedDay - terms) delay = 0;
+                var due = expected.AddDays(-delay); var recognized = due.AddDays(-terms);
+                var invoiceDate = recognized.AddDays(-Math.Min((int)(Draw(id, 6) % 8), recognized.DayNumber - opening.DayNumber));
+                var amountTier = Draw(id, 10) % 100;
+                var (low, span) = amountTier < 60 ? (25_000L, 2_475_001L) : amountTier < 90 ? (2_500_000L, 22_500_001L) : amountTier < 98 ? (25_000_000L, 155_000_001L) : (180_000_000L, 7_820_000_001L);
+                var cents = (long)(FinanceCalculator.Money((low + (long)(Draw(id, 11) % (ulong)span)) / 100m / rates[currency]) * 100m);
+                var paymentRoll = Draw(id, 12) % 100;
+                var paidCents = paymentRoll < 40 ? 0 : paymentRoll < 85 ? cents * (100 + (long)(Draw(id, 13) % 9401)) / 10000 : cents;
                 var amount = cents / 100m; var paid = paidCents / 100m;
                 var amountText = DocumentFiles.Number(amount);
                 var purpose = $"Support services, order {id:000000000}, stage {id % 12 + 1}, invoice {invoiceEid}, contract {contractEid}";
                 // Contracts may continue in the next part; only the first invoice creates the contract row.
-                if (id % 25 == 1) contracts.Row([contract, contractEid, cp, "2026-10-01", currency, direction, "7", $"Support services for order group {group}"]);
-                invoices.Row([invoice, invoiceEid, contract, contractEid, cp, currency, account, direction, "2026-10-01", DocumentFiles.Date(due), amountText, purpose]);
+                if (id % 25 == 1) contracts.Row([contract, contractEid, cp, "2026-10-01", currency, direction, terms.ToString(CultureInfo.InvariantCulture), $"Support services for order group {group}"]);
+                invoices.Row([invoice, invoiceEid, contract, contractEid, cp, currency, account, direction, DocumentFiles.Date(invoiceDate), DocumentFiles.Date(due), amountText, purpose]);
                 acts.Row([act, actEid, invoice, invoiceEid, contract, contractEid, cp, obligation, DocumentFiles.Date(recognized), direction == "in" ? "revenue" : "operating_expenses", currency, amountText]);
                 obligations.Row([obligation, invoice, invoiceEid, act, actEid, contract, contractEid, cp, currency, account, direction, amountText, DocumentFiles.Number(paid), DocumentFiles.Number(amount - paid), DocumentFiles.Date(due), DocumentFiles.Date(expected)]);
                 if (paidCents > 0)
                 {
-                    var first = id % 3 == 0 ? paidCents / 2 : paidCents;
-                    Payment(1, first); if (first != paidCents) Payment(2, paidCents - first);
+                    var first = paidCents > 1 && Draw(id, 14) % 100 < 35 ? Math.Clamp(paidCents * (20 + (long)(Draw(id, 15) % 61)) / 100, 1, paidCents - 1) : paidCents;
+                    var from = Math.Max(1, expectedDay - (int)(Draw(id, 16) % 45)); var to = Math.Min(lastDay, expectedDay + (int)(Draw(id, 17) % 20));
+                    var firstDate = PickDate(profile, from, to, Draw(id, 18));
+                    Payment(1, first, firstDate);
+                    if (first != paidCents) Payment(2, paidCents - first, PickDate(profile, firstDate.DayNumber - opening.DayNumber, to, Draw(id, 19)));
                 }
                 manifest.InvoiceTotals[currency] = manifest.InvoiceTotals.GetValueOrDefault(currency) + amount;
                 manifest.PaymentTotals[currency] = manifest.PaymentTotals.GetValueOrDefault(currency) + paid;
-                void Payment(int part, long paymentCents) => bank.Row([$"BT-{id:000000000}-{part}", $"2026-10-{2 + id % 12:00}", account, currency, cp, direction, DocumentFiles.Number(paymentCents / 100m), obligation, purpose, direction == "in" ? "customer_receipts" : "operating_payments"]);
+                void Payment(int part, long paymentCents, DateOnly date) => bank.Row([$"BT-{id:000000000}-{part}", DocumentFiles.Date(date), account, currency, cp, direction, DocumentFiles.Number(paymentCents / 100m), obligation, purpose, direction == "in" ? "customer_receipts" : "operating_payments"]);
             }
             var batchFiles = new[] { contracts.Complete(paths["contracts"], "contracts"), invoices.Complete(paths["invoices"], "invoices"), acts.Complete(paths["acts"], "acts"), obligations.Complete(paths["obligations"], "obligations"), bank.Complete(paths["bank"], "bank") };
             var written = batchFiles.Sum(f => f.Bytes); total += written; bytesPerRecord = written / (id - firstId);
